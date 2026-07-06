@@ -6,9 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "postinstall": "prisma generate",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "prisma:generate": "prisma generate",
+    "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:push": "prisma db push"
   },
   "dependencies": {

@@ -67,20 +67,52 @@ https://reader.example.com/api/feishu/callback
 上线前至少需要配置以下环境变量：
 
 ```env
+DATABASE_URL="postgresql://USER:PASSWORD@HOST:PORT/DATABASE?sslmode=require"
+
 FEISHU_APP_ID="你的飞书 App ID"
 FEISHU_APP_SECRET="你的飞书 App Secret"
 FEISHU_REDIRECT_URI="https://你的正式域名/api/feishu/callback"
+
+NEXT_PUBLIC_APP_URL="https://你的正式域名"
+APP_URL="https://你的正式域名"
+
 AUTH_SECRET="用于登录态签名的高强度随机字符串"
 APP_ENCRYPTION_SECRET="用于加密用户 API Key 等敏感信息的高强度随机字符串"
+
+OCR_PROVIDER=""
+OCR_API_KEY=""
+OCR_API_URL=""
 ```
 
 建议：
 
-1. `AUTH_SECRET` 使用至少 32 字节以上的随机字符串。
-2. `APP_ENCRYPTION_SECRET` 使用至少 32 字节以上的随机字符串。
-3. 不同环境使用不同密钥。
-4. 不要把生产环境密钥写入仓库。
-5. 不要把生产环境密钥发给普通用户。
+1. `DATABASE_URL` 使用生产 PostgreSQL 连接串，推荐 Neon PostgreSQL、Supabase PostgreSQL 或 Railway PostgreSQL。
+2. `AUTH_SECRET` 使用至少 32 字节以上的随机字符串。
+3. `APP_ENCRYPTION_SECRET` 使用至少 32 字节以上的随机字符串。
+4. 不同环境使用不同密钥。
+5. 不要把生产环境密钥写入仓库。
+6. 不要把生产环境密钥发给普通用户。
+
+当前项目使用自定义认证逻辑，不依赖 NextAuth，因此不需要配置 `NEXTAUTH_SECRET` 或 `NEXTAUTH_URL`。
+
+## 4.1 生产数据库
+
+MVP v1.0.0 已将 Prisma datasource 切换为 PostgreSQL：
+
+```prisma
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+```
+
+SQLite 只适合本地开发和单机试用，不适合部署成多人注册使用的线上产品。线上请使用托管 PostgreSQL，并在首次部署前执行：
+
+```bash
+npx prisma migrate deploy
+```
+
+如果暂时没有 migration 文件，也可以在首次生产初始化前先基于当前 schema 创建初始 migration，再执行部署迁移。不要在生产环境使用 `prisma db push` 作为长期迁移方案。
 
 ## 5. 飞书权限要求
 
@@ -170,7 +202,20 @@ OCR_API_KEY=""
 OCR_API_URL=""
 ```
 
-如果生产环境不支持本地 OCR，请优先接入稳定的云 OCR 服务，并确保不在日志中打印用户图片内容或隐私信息。
+如果部署到 Vercel 等 serverless 平台，默认的 `macos_vision` OCR 不适合作为生产能力。请优先接入稳定的云 OCR 服务，并确保不在日志中打印用户图片内容或隐私信息。
+
+## 8.1 Vercel 部署兼容性
+
+当前项目可以作为 Next.js 应用部署到 Vercel，但上线前必须处理这些点：
+
+1. 不要使用 `prisma/dev.db`，生产必须连接 PostgreSQL。
+2. 不依赖 `.next`、`node_modules` 或本地数据库文件持久化。
+3. 飞书 OAuth callback 是 API Route，可在 serverless 环境运行。
+4. Word / Markdown 导出当前通过响应内容生成，不依赖长期本地文件持久化。
+5. PDF 如果走浏览器打印保存方案，需要在前端完成，不应依赖 serverless 本地写文件。
+6. OCR 默认 `macos_vision` 不适合 Vercel，生产建议配置云 OCR Provider。
+7. 部署安装阶段应执行 `postinstall: prisma generate`。
+8. 生产数据库初始化应执行 `npx prisma migrate deploy`。
 
 ## 9. 上线前检查清单
 
