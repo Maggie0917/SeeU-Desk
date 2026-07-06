@@ -1,0 +1,346 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum ReadingStatus {
+  unread
+  reading
+  finished
+}
+
+enum NoteType {
+  key_viewpoint
+  quote
+  methodology
+  case
+  data
+  uncategorized
+}
+
+enum TagRole {
+  primary
+  secondary
+}
+
+enum SyncStatus {
+  pending
+  creating
+  document_created
+  writing
+  synced
+  content_failed
+  failed
+}
+
+model User {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  passwordHash  String   @map("password_hash")
+  name          String?
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  articles       Article[]
+  highlights     Highlight[]
+  notes          Note[]
+  tags           Tag[]
+  articleTags    ArticleTag[]
+  feishuDocs     FeishuDoc[]
+  feishuCredential FeishuCredential?
+  folderMappings TagFeishuFolderMapping[]
+  reports        Report[]
+  reportUnderlines ReportUnderline[]
+  reportReadingNotes ReportReadingNote[]
+  readingSessions ReadingSession[]
+  settings       UserSettings?
+  aiUsageLogs    AiUsageLog[]
+
+  @@map("users")
+}
+
+model Article {
+  id                 String        @id @default(cuid())
+  userId             String        @map("user_id")
+  title              String
+  sourceUrl          String?       @map("source_url")
+  sourcePlatform     String?       @map("source_platform")
+  authorName         String?       @map("author_name")
+  content            String
+  summary            String?
+  methodologySummary String?       @map("methodology_summary")
+  reusableInsights   String?       @map("reusable_insights")
+  methodologyAndInsights String?    @map("methodology_and_insights")
+  keywords           String?
+  myOpinion          String?       @map("my_opinion")
+  readingStatus      ReadingStatus @default(unread) @map("reading_status")
+  isStarred          Boolean       @default(false) @map("is_starred")
+  isInReadLater      Boolean       @default(true) @map("is_in_read_later")
+  isDeleted          Boolean       @default(false) @map("is_deleted")
+  deletedAt          DateTime?     @map("deleted_at")
+  createdAt          DateTime      @default(now()) @map("created_at")
+  updatedAt          DateTime      @updatedAt @map("updated_at")
+
+  user            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  highlights      Highlight[]
+  notes           Note[]
+  articleTags     ArticleTag[]
+  feishuDoc       FeishuDoc?
+  readingSessions ReadingSession[]
+
+  @@index([userId])
+  @@map("articles")
+}
+
+model Highlight {
+  id             String   @id @default(cuid())
+  userId         String   @map("user_id")
+  articleId      String   @map("article_id")
+  highlightText  String   @map("highlight_text")
+  paragraphIndex Int?     @map("paragraph_index")
+  startOffset    Int?     @map("start_offset")
+  endOffset      Int?     @map("end_offset")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  article Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  note    Note?
+
+  @@index([userId])
+  @@index([articleId])
+  @@map("highlights")
+}
+
+model Note {
+  id          String   @id @default(cuid())
+  userId      String   @map("user_id")
+  articleId   String   @map("article_id")
+  highlightId String?  @unique @map("highlight_id")
+  noteType    NoteType @default(uncategorized) @map("note_type")
+  userComment String?  @map("user_comment")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  article   Article    @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  highlight Highlight? @relation(fields: [highlightId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([articleId])
+  @@map("notes")
+}
+
+model Tag {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  name      String
+  isDefault Boolean  @default(false) @map("is_default")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user           User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  articleTags    ArticleTag[]
+  folderMapping  TagFeishuFolderMapping?
+  reports        Report[]
+
+  @@unique([userId, name])
+  @@index([userId])
+  @@map("tags")
+}
+
+model ArticleTag {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  articleId String   @map("article_id")
+  tagId     String   @map("tag_id")
+  tagRole   TagRole  @map("tag_role")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  article Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  tag     Tag     @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@unique([articleId, tagId])
+  @@index([userId])
+  @@map("article_tags")
+}
+
+model FeishuDoc {
+  id              String     @id @default(cuid())
+  userId          String     @map("user_id")
+  articleId       String     @unique @map("article_id")
+  feishuDocToken  String?    @map("feishu_doc_token")
+  feishuDocUrl    String?    @map("feishu_doc_url")
+  syncStatus      SyncStatus @default(pending) @map("sync_status")
+  lastSyncedAt    DateTime?  @map("last_synced_at")
+  createdAt       DateTime   @default(now()) @map("created_at")
+  updatedAt       DateTime   @updatedAt @map("updated_at")
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  article Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("feishu_docs")
+}
+
+model FeishuCredential {
+  id           String   @id @default(cuid())
+  userId       String   @unique @map("user_id")
+  accessToken  String   @map("access_token")
+  refreshToken String?  @map("refresh_token")
+  expiresAt    DateTime @map("expires_at")
+  scope        String?
+  tokenType    String?  @map("token_type")
+  openId       String?  @map("open_id")
+  tenantKey    String?  @map("tenant_key")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("feishu_credentials")
+}
+
+model TagFeishuFolderMapping {
+  id                 String    @id @default(cuid())
+  userId             String    @map("user_id")
+  tagId              String    @unique @map("tag_id")
+  feishuFolderToken  String    @map("feishu_folder_token")
+  feishuFolderName   String    @map("feishu_folder_name")
+  lastSyncedAt       DateTime? @map("last_synced_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tag  Tag  @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("tag_feishu_folder_mappings")
+}
+
+model Report {
+  id             String   @id @default(cuid())
+  userId         String   @map("user_id")
+  tagId          String   @map("tag_id")
+  title          String
+  timeRangeStart DateTime @map("time_range_start")
+  timeRangeEnd   DateTime @map("time_range_end")
+  content        String
+  articleCount   Int      @default(0) @map("article_count")
+  isSyncedFeishu Boolean  @default(false) @map("is_synced_feishu")
+  feishuDocToken String?  @map("feishu_doc_token")
+  feishuDocUrl   String?  @map("feishu_doc_url")
+  feishuSyncedAt DateTime? @map("feishu_synced_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tag  Tag  @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  underlines ReportUnderline[]
+  readingNote ReportReadingNote?
+
+  @@index([userId])
+  @@map("reports")
+}
+
+model ReadingSession {
+  id              String   @id @default(cuid())
+  userId          String   @map("user_id")
+  articleId       String   @map("article_id")
+  startedAt       DateTime @map("started_at")
+  endedAt         DateTime? @map("ended_at")
+  durationSeconds Int      @default(0) @map("duration_seconds")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  article Article @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("reading_sessions")
+}
+
+model UserSettings {
+  id                  String   @id @default(cuid())
+  userId              String   @unique @map("user_id")
+  feishuAuthStatus    String   @default("not_connected") @map("feishu_auth_status")
+  ocrPreference       String   @default("mock") @map("ocr_preference")
+  aiSummaryPreference String   @default("balanced") @map("ai_summary_preference")
+  aiProvider          String   @default("openai_compatible") @map("ai_provider")
+  aiBaseUrl           String?  @map("ai_base_url")
+  aiModel             String?  @map("ai_model")
+  aiApiKeyEncrypted   String?  @map("ai_api_key_encrypted")
+  aiApiKeyLast4       String?  @map("ai_api_key_last4")
+  aiEnabled           Boolean  @default(false) @map("ai_enabled")
+  aiLastTestedAt      DateTime? @map("ai_last_tested_at")
+  aiConnectionStatus  String   @default("not_configured") @map("ai_connection_status")
+  dashboardWidgetPreferences String? @map("dashboard_widget_preferences")
+  reportFeishuFolderToken String? @map("report_feishu_folder_token")
+  reportFeishuFolderName  String? @map("report_feishu_folder_name")
+  reportPreference    String   @default("manual") @map("report_preference")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_settings")
+}
+
+model AiUsageLog {
+  id               String   @id @default(cuid())
+  userId           String   @map("user_id")
+  articleId        String?  @map("article_id")
+  reportId         String?  @map("report_id")
+  actionType       String   @map("action_type")
+  provider         String
+  model            String
+  promptTokens     Int?     @map("prompt_tokens")
+  completionTokens Int?     @map("completion_tokens")
+  totalTokens      Int?     @map("total_tokens")
+  usageAvailable   Boolean  @default(false) @map("usage_available")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([actionType])
+  @@index([createdAt])
+  @@map("ai_usage_logs")
+}
+
+model ReportUnderline {
+  id           String   @id @default(cuid())
+  userId       String   @map("user_id")
+  reportId     String   @map("report_id")
+  selectedText String   @map("selected_text")
+  blockIndex   Int      @map("block_index")
+  startOffset  Int      @map("start_offset")
+  endOffset    Int      @map("end_offset")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  report Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([reportId])
+  @@map("report_underlines")
+}
+
+model ReportReadingNote {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  reportId  String   @unique @map("report_id")
+  content   String   @default("")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  report Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("report_reading_notes")
+}
