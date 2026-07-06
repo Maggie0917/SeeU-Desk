@@ -20,9 +20,14 @@
 
 当前生产推荐使用 PostgreSQL。可选方案：
 
+- Netlify + Prisma Postgres Extension
 - Neon PostgreSQL
 - Supabase PostgreSQL
 - Railway PostgreSQL
+
+优先推荐：Netlify + Prisma Postgres 或 Neon PostgreSQL。
+
+如果使用 Prisma Postgres 的 Netlify 扩展，连接后可为部署站点设置 `DATABASE_URL`。上线前仍需确认该变量在 Netlify 生产环境中可被构建和运行时读取。
 
 生产环境变量：
 
@@ -30,13 +35,13 @@
 DATABASE_URL="postgresql://USER:PASSWORD@HOST:PORT/DATABASE?sslmode=require"
 ```
 
-SQLite 只适合本地开发，不适合多人注册使用的线上产品。生产部署前需要执行：
+SQLite 只适合本地开发，不适合多人注册使用的线上产品。当前 Prisma provider 已切换为 PostgreSQL，仓库包含 PostgreSQL 初始 migration。生产部署前需要执行：
 
 ```bash
 npx prisma migrate deploy
 ```
 
-如果还没有 migration 文件，请先在受控环境基于当前 Prisma schema 生成初始 migration，再部署到生产数据库。
+不要在生产环境长期使用 `prisma db push`。
 
 ## 3. 环境变量配置
 
@@ -48,12 +53,12 @@ DATABASE_URL="postgresql://USER:PASSWORD@HOST:PORT/DATABASE?sslmode=require"
 AUTH_SECRET="replace-with-strong-random-secret"
 APP_ENCRYPTION_SECRET="replace-with-strong-random-secret"
 
-NEXT_PUBLIC_APP_URL="https://your-domain.com"
-APP_URL="https://your-domain.com"
+NEXT_PUBLIC_APP_URL="https://your-netlify-site.netlify.app"
+APP_URL="https://your-netlify-site.netlify.app"
 
 FEISHU_APP_ID="cli_xxxxxx"
 FEISHU_APP_SECRET="replace-with-feishu-app-secret"
-FEISHU_REDIRECT_URI="https://your-domain.com/api/feishu/callback"
+FEISHU_REDIRECT_URI="https://your-netlify-site.netlify.app/api/feishu/callback"
 
 OCR_PROVIDER=""
 OCR_API_KEY=""
@@ -81,12 +86,10 @@ http://localhost:<PORT>/api/feishu/callback
 https://你的正式域名/api/feishu/callback
 ```
 
-飞书后台 Redirect URL 必须和 `FEISHU_REDIRECT_URI` 完全一致：
-
-- 如果使用 Vercel 临时域名，应添加：
+飞书后台 Redirect URL 必须和 `FEISHU_REDIRECT_URI` 完全一致。如果使用 Netlify 临时域名，应添加：
 
 ```text
-https://xxx.vercel.app/api/feishu/callback
+https://你的-netlify-site.netlify.app/api/feishu/callback
 ```
 
 - 如果后续绑定正式域名，应再添加：
@@ -96,6 +99,12 @@ https://正式域名/api/feishu/callback
 ```
 
 修改飞书后台回调地址后，用户需要从设置页重新连接飞书。
+
+Netlify 临时域名和正式域名不同。换域名后需要同步修改：
+
+1. Netlify 环境变量 `FEISHU_REDIRECT_URI`。
+2. Netlify 环境变量 `NEXT_PUBLIC_APP_URL` / `APP_URL`。
+3. 飞书开放平台 Redirect URL。
 
 ## 5. 飞书权限确认
 
@@ -133,7 +142,7 @@ docx:document:create
 注意：
 
 - 默认 `macos_vision` 方案适合本机 macOS 环境。
-- Vercel serverless 环境不适合依赖 macOS Vision 本地能力。
+- Netlify serverless 环境不适合依赖 macOS Vision 本地能力。
 - 生产建议配置云 OCR Provider：
 
 ```env
@@ -144,21 +153,53 @@ OCR_API_URL=""
 
 OCR 失败时应提示用户重新上传清晰截图或手动粘贴正文。
 
-## 8. Vercel / 其他平台部署步骤
+如果未配置云 OCR，前端不应显示 mock 成功；应提示“当前未配置 OCR 服务，请手动粘贴正文或联系管理员配置 OCR。”
 
-推荐 Vercel 流程：
+## 8. Netlify 部署步骤
 
-1. 将 GitHub 仓库连接到 Vercel。
-2. 设置 Framework 为 Next.js。
-3. 配置生产环境变量。
-4. 连接 PostgreSQL 数据库。
-5. 首次部署前执行 Prisma migrate deploy。
-6. 部署成功后复制 Vercel 域名。
-7. 将 `https://xxx.vercel.app/api/feishu/callback` 添加到飞书开放平台 Redirect URL。
-8. 回到产品设置页测试飞书授权。
-9. 完成线上全流程验收。
+推荐 Netlify 流程：
 
-如果需要更稳定的后端运行时，或 OCR 依赖服务端长期进程，可考虑 Railway / Render，并同样使用 PostgreSQL。
+1. 登录 Netlify。
+2. 选择 New site from Git。
+3. 选择 GitHub 仓库 `Maggie0917/SeeU-Desk`。
+4. Build command 使用 `npm run build`。
+5. Publish directory 让 Netlify 按 Next.js 项目自动识别；不要手动改成普通静态目录。
+6. 配置生产环境变量。
+7. 连接 PostgreSQL 数据库。
+8. 执行 Prisma 生产迁移：
+
+```bash
+npx prisma migrate deploy
+```
+
+9. 完成首次 Deploy。
+10. 获取 Netlify 域名。
+11. 将 `https://你的-netlify-域名/api/feishu/callback` 添加到飞书开放平台 Redirect URL。
+12. 回到线上产品测试飞书授权。
+13. 完成线上全流程验收。
+
+当前项目包含 `netlify.toml`：
+
+```toml
+[build]
+  command = "npm run build"
+
+[build.environment]
+  NODE_VERSION = "20"
+```
+
+Netlify 环境变量要在 Netlify 项目后台配置，不要把真实 `.env` 提交到 GitHub。如果变量需要用于构建，作用域必须包含 Builds。
+
+## 8.1 其他平台部署参考
+
+Vercel / Railway / Render 也可部署，但需同样满足：
+
+1. 使用 PostgreSQL。
+2. 配置生产环境变量。
+3. 执行 `npx prisma migrate deploy`。
+4. 配置对应平台域名到飞书 Redirect URL。
+
+如果需要更稳定的后端运行时，或 OCR 依赖服务端长期进程，可考虑 Railway / Render。
 
 ## 9. 部署后验证清单
 
@@ -170,12 +211,17 @@ OCR 失败时应提示用户重新上传清晰截图或手动粘贴正文。
 - [ ] 抖音截图 OCR 可以生成阅读页。
 - [ ] 可以生成文章摘要。
 - [ ] 可以生成方法论和启示。
+- [ ] 文章划线生成笔记。
+- [ ] 同步文章到飞书。
 - [ ] 可以生成洞察报告。
-- [ ] 可以同步文章到飞书。
-- [ ] 可以同步洞察报告到飞书。
-- [ ] 可以导出 Markdown / Word / PDF。
+- [ ] 报告红线划线。
+- [ ] 写报告随手笔记。
+- [ ] 导出 Markdown。
+- [ ] 导出 Word。
+- [ ] 打印 / 保存 PDF。
+- [ ] 同步洞察报告到飞书。
 - [ ] 数据看板统计正常。
-- [ ] 多用户数据隔离正常。
+- [ ] 新建第二个账号，确认看不到第一个账号的数据。
 - [ ] 刷新页面数据不丢失。
 
 ## 10. 回滚方式
