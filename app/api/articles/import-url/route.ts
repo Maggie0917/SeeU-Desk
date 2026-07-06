@@ -22,6 +22,14 @@ export async function POST(request: Request) {
   const savePending = Boolean(body.savePending);
 
   if (!url) return NextResponse.json({ error: "请粘贴文章链接" }, { status: 400 });
+  try {
+    const parsedUrl = new URL(url);
+    if (!["http:", "https:"].includes(parsedUrl.protocol)) {
+      return NextResponse.json({ error: "请粘贴 http 或 https 开头的文章链接" }, { status: 400 });
+    }
+  } catch {
+    return NextResponse.json({ error: "链接格式不正确，请粘贴完整文章链接" }, { status: 400 });
+  }
 
   if (savePending && body.diagnostic) {
     const diagnostic = body.diagnostic as Partial<ParserDiagnostic>;

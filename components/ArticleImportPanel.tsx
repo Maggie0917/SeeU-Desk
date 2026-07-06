@@ -7,6 +7,9 @@ type ParserDiagnostic = {
   platform?: string;
   title?: string;
   contentLength?: number;
+  htmlLength?: number;
+  httpStatus?: number;
+  finalHost?: string;
   extractorUsed?: string;
   failureReason?: string;
   failureType?: string;
@@ -33,6 +36,40 @@ export function ArticleImportPanel() {
       douyin: "douyin.com",
       generic_web: "网页"
     }[platform || ""] || platform || "";
+  }
+
+  function failureTypeLabel(type?: string) {
+    return {
+      content_too_short: "正文过短",
+      container_not_found: "未找到正文容器",
+      platform_shell_page: "平台壳页",
+      login_required: "需要登录",
+      dynamic_render_required: "需要浏览器渲染",
+      anti_crawler: "平台限制访问",
+      network_error: "网络请求失败",
+      empty_content: "空正文",
+      unknown: "未知原因"
+    }[type || "unknown"] || type || "未知原因";
+  }
+
+  function specificFallbackTip(nextDiagnostic?: ParserDiagnostic) {
+    if (!nextDiagnostic) return "解析失败，可以改用手动正文、OCR 或保存为待处理链接";
+    if (nextDiagnostic.platform === "wechat_mp") {
+      return "公众号文章可能限制服务端访问。你可以打开原文后复制正文粘贴导入，或使用 OCR / 保存为待处理链接。";
+    }
+    if (nextDiagnostic.platform === "xiaohongshu") {
+      return "小红书内容可能需要浏览器渲染或登录态。你可以手动复制正文粘贴导入，或使用 OCR / 保存为待处理链接。";
+    }
+    if (nextDiagnostic.platform === "douyin") {
+      return "抖音内容可能返回动态分享页。你可以上传截图 OCR、手动粘贴正文，或保存为待处理链接。";
+    }
+    if (nextDiagnostic.failureType === "anti_crawler" || nextDiagnostic.failureType === "login_required") {
+      return "平台限制了服务端访问。请使用手动粘贴、OCR，或保存为待处理链接。";
+    }
+    if (nextDiagnostic.failureType === "container_not_found" || nextDiagnostic.failureType === "empty_content") {
+      return "暂未识别到有效正文。请检查链接，或使用手动粘贴、OCR、保存待处理链接。";
+    }
+    return nextDiagnostic.failureReason || "暂未识别到正文。可以使用手动粘贴、OCR，或保存为待处理链接。";
   }
 
   function fallbackOcrTitle(fileName?: string) {
@@ -68,7 +105,7 @@ export function ArticleImportPanel() {
       setDiagnostic(nextDiagnostic ?? null);
       if (isUsefulTitle(nextDiagnostic?.title) && !title) setTitle(nextDiagnostic!.title!);
       if (nextDiagnostic?.platform && !sourcePlatform) setSourcePlatform(diagnosticPlatformLabel(nextDiagnostic.platform));
-      setMessage(data.error || nextDiagnostic?.failureReason || "解析失败，可以改用手动正文、OCR 或保存为待处理链接");
+      setMessage(data.error || specificFallbackTip(nextDiagnostic));
       return;
     }
     router.push(`/article/${data.articleId}`);
@@ -162,11 +199,16 @@ export function ArticleImportPanel() {
         {message ? <div className="mt-3 rounded-md border border-sky/30 bg-white px-3 py-2 text-sm text-ink">{message}</div> : null}
         {diagnostic ? (
           <div className="mt-3 rounded-md border border-coral/25 bg-white p-3 text-sm text-ink">
-            <div className="font-bold text-coral">解析诊断：{diagnostic.failureType || "unknown"}</div>
+            <div className="font-bold text-coral">解析诊断：{failureTypeLabel(diagnostic.failureType)}</div>
             <div className="mt-1 text-moss">
               平台：{diagnosticPlatformLabel(diagnostic.platform)}；正文长度：{diagnostic.contentLength ?? 0}；提取器：{diagnostic.extractorUsed || "未命中"}
+              {diagnostic.httpStatus ? `；HTTP：${diagnostic.httpStatus}` : ""}
+              {diagnostic.finalHost ? `；最终站点：${diagnostic.finalHost}` : ""}
             </div>
             <div className="mt-1 text-moss">{diagnostic.failureReason}</div>
+            <div className="mt-2 rounded-md bg-paper px-3 py-2 text-moss">
+              {specificFallbackTip(diagnostic)}
+            </div>
             {diagnostic.platform === "douyin" ? (
               <div className="mt-2 rounded-md bg-paper px-3 py-2 text-moss">
                 该抖音链接暂时无法直接解析正文。建议上传抖音图文截图通过 OCR 识别，也可以手动粘贴正文，或先保存为待处理链接。
