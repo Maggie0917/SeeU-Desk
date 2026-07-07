@@ -45,10 +45,14 @@ export function ArticleImportPanel() {
       container_not_found: "未找到正文容器",
       platform_shell_page: "平台壳页",
       login_required: "需要登录",
+      blocked_by_platform: "平台限制访问",
+      deleted_or_unavailable: "内容不可用",
       dynamic_render_required: "需要浏览器渲染",
       anti_crawler: "平台限制访问",
       network_error: "网络请求失败",
       empty_content: "空正文",
+      parse_failed: "解析失败",
+      unsupported_url_shape: "暂不支持的链接形态",
       unknown: "未知原因"
     }[type || "unknown"] || type || "未知原因";
   }
@@ -56,18 +60,24 @@ export function ArticleImportPanel() {
   function specificFallbackTip(nextDiagnostic?: ParserDiagnostic) {
     if (!nextDiagnostic) return "解析失败，可以改用手动正文、OCR 或保存为待处理链接";
     if (nextDiagnostic.platform === "wechat_mp") {
-      return "公众号文章可能限制服务端访问。你可以打开原文后复制正文粘贴导入，或使用 OCR / 保存为待处理链接。";
+      if (nextDiagnostic.failureType === "deleted_or_unavailable") return "公众号文章已删除、不可见或内容不可用。你可以检查原文链接，或保存为待处理链接。";
+      if (nextDiagnostic.failureType === "login_required") return "该公众号内容需要在平台内登录后查看，服务端无法直接解析。请使用导入助手或手动粘贴正文。";
+      if (nextDiagnostic.failureType === "blocked_by_platform" || nextDiagnostic.failureType === "platform_shell_page") return "公众号文章可能限制服务端访问。请打开原文后使用导入助手，或手动粘贴正文。";
+      return "公众号文章可能限制服务端访问。请打开原文后使用导入助手，或手动粘贴正文。";
     }
     if (nextDiagnostic.platform === "xiaohongshu") {
-      return "小红书内容可能需要浏览器渲染或登录态。你可以手动复制正文粘贴导入，或使用 OCR / 保存为待处理链接。";
+      if (nextDiagnostic.failureType === "login_required") return "该内容需要在小红书内登录后查看，服务端无法直接解析。请使用导入助手。";
+      if (nextDiagnostic.failureType === "platform_shell_page") return "当前链接返回的是小红书平台壳页，不是正文页。请使用导入助手或手动粘贴。";
+      if (nextDiagnostic.failureType === "blocked_by_platform") return "小红书限制了服务端访问。请打开原文后使用导入助手，或使用 OCR / 手动粘贴。";
+      return "小红书内容可能需要浏览器渲染或登录态。请打开原文后使用导入助手，或使用 OCR / 手动粘贴。";
     }
     if (nextDiagnostic.platform === "douyin") {
       return "抖音内容可能返回动态分享页。你可以上传截图 OCR、手动粘贴正文，或保存为待处理链接。";
     }
-    if (nextDiagnostic.failureType === "anti_crawler" || nextDiagnostic.failureType === "login_required") {
+    if (nextDiagnostic.failureType === "anti_crawler" || nextDiagnostic.failureType === "blocked_by_platform" || nextDiagnostic.failureType === "login_required") {
       return "平台限制了服务端访问。请使用手动粘贴、OCR，或保存为待处理链接。";
     }
-    if (nextDiagnostic.failureType === "container_not_found" || nextDiagnostic.failureType === "empty_content") {
+    if (nextDiagnostic.failureType === "container_not_found" || nextDiagnostic.failureType === "empty_content" || nextDiagnostic.failureType === "parse_failed") {
       return "暂未识别到有效正文。请检查链接，或使用手动粘贴、OCR、保存待处理链接。";
     }
     return nextDiagnostic.failureReason || "暂未识别到正文。可以使用手动粘贴、OCR，或保存为待处理链接。";

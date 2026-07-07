@@ -8,10 +8,14 @@ export type ParserFailureType =
   | "container_not_found"
   | "platform_shell_page"
   | "login_required"
+  | "blocked_by_platform"
+  | "deleted_or_unavailable"
   | "dynamic_render_required"
   | "anti_crawler"
   | "network_error"
   | "empty_content"
+  | "parse_failed"
+  | "unsupported_url_shape"
   | "unknown";
 
 export type ParserDiagnostic = {
@@ -34,6 +38,7 @@ export type ParsedArticle = {
   sourcePlatform: string;
   authorName?: string;
   publishedAt?: string;
+  imageUrls?: string[];
   diagnostic: ParserDiagnostic;
 };
 
@@ -115,6 +120,17 @@ function sourcePlatformLabel(platform: SourcePlatformKind, url: string) {
   if (platform === "xiaohongshu") return "xiaohongshu.com";
   if (platform === "douyin") return "douyin.com";
   return safeHostname(url) || "generic_web";
+}
+
+function supportedXiaohongshuUrlShape(url: string) {
+  try {
+    const parsed = new URL(url);
+    const pathname = parsed.pathname.replace(/\/+$/, "");
+    return /^\/explore\/[A-Za-z0-9]+/.test(pathname)
+      || /^\/discovery\/item\/[A-Za-z0-9]+/.test(pathname);
+  } catch {
+    return false;
+  }
 }
 
 function decodeEntities(text: string) {
@@ -211,6 +227,8 @@ function matchesSelector(node: HtmlNode, selector: string) {
   if (normalized === tag) return true;
   if (normalized.startsWith("#")) return attr(node, "id") === normalized.slice(1);
   if (normalized.startsWith(".")) return hasClass(node, normalized.slice(1));
+  const tagClass = normalized.match(/^([a-z0-9_-]+)\.([a-z0-9_-]+)$/i);
+  if (tagClass) return tag === tagClass[1].toLowerCase() && hasClass(node, tagClass[2]);
 
   const classContains = normalized.match(/^\[class\*=['"](.+)['"]\]$/);
   if (classContains) return attrIncludes(node, "class", classContains[1]);
@@ -235,6 +253,11 @@ function queryFirst(root: HtmlNode, selectors: string[]) {
     if (node) return node;
   }
   return undefined;
+}
+
+function rawNodeText(node: HtmlNode): string {
+  if (node.nodeName === "#text") return node.value || "";
+  return children(node).map(rawNodeText).join("");
 }
 
 function metaContent(root: HtmlNode, pairs: Array<[string, string]>) {
@@ -278,7 +301,7 @@ function extractPublishedAt(root: HtmlNode) {
     ["name", "pubdate"],
     ["name", "publishdate"],
     ["name", "date"]
-  ]) ?? compactText(nodeText(queryFirst(root, ["#publish_time", "time"]) || { nodeName: "" }))) || undefined;
+  ]) ?? compactText(nodeText(queryFirst(root, ["#publish_time", "em.rich_media_meta_text", "time"]) || { nodeName: "" }))) || undefined;
 }
 
 function navigationNoiseScore(content: string) {
@@ -371,7 +394,7 @@ function looksLikeCodeNoise(content: string) {
 function genericBlockedFailure(content: string, status?: number): ParserFailureType | null {
   const compact = content.replace(/\s+/g, "");
   if (status === 401) return "login_required";
-  if (status === 403 || /访问过于频繁|安全验证|验证码|人机验证|访问受限|AccessDenied|Access Denied|Forbidden/i.test(content)) return "anti_crawler";
+  if (status === 403 || /访问过于频繁|安全验证|验证码|人机验证|访问受限|AccessDenied|Access Denied|Forbidden/i.test(content)) return "blocked_by_platform";
   if (/请登录|登录后查看|登录后继续|注册登录|账号登录/.test(compact) && compact.length < 1200) return "login_required";
   if (/404|页面不存在|内容不存在|文章不存在|页面未找到|NotFound/i.test(content) && compact.length < 1200) return "network_error";
   return null;
@@ -383,10 +406,15 @@ function platformShellFailure(platform: SourcePlatformKind, content: string, tit
     if (/^百度$/.test(title) && compact.length < 80) return "platform_shell_page";
     if (/^百度$/.test(title) && /百度一下|请输入搜索词|打开百度App/.test(compact)) return "platform_shell_page";
   }
-  if (platform === "wechat_mp" && /请在微信客户端打开|环境异常|参数错误|该内容已被发布者删除|此内容因违规无法查看/.test(compact)) return "platform_shell_page";
+  if (platform === "wechat_mp") {
+    if (/该内容已被发布者删除|此内容因违规无法查看|文章已删除|内容不存在/.test(compact)) return "deleted_or_unavailable";
+    if (/请在微信客户端打开|环境异常|参数错误|访问频繁|操作频繁|安全验证|验证码|访问受限/.test(compact)) return "blocked_by_platform";
+    if (/登录后查看|请登录/.test(compact)) return "login_required";
+  }
   if (platform === "xiaohongshu") {
-    if (/打开小红书查看|登录后查看更多|下载小红书App|下载小红书APP|请升级浏览器|你的生活兴趣社区/.test(compact)) return "platform_shell_page";
+    if (/打开小红书查看|在小红书App中打开|在小红书APP中打开|下载小红书App|下载小红书APP|请升级浏览器|你的生活兴趣社区/.test(compact)) return "platform_shell_page";
     if (/登录/.test(compact) && compact.length < 600) return "login_required";
+    if (/验证码|安全验证|访问频繁|访问受限|风险验证/.test(compact)) return "blocked_by_platform";
     if (/沪ICP备|营业执照|平台服务协议|违法不良信息举报/.test(compact)) return "platform_shell_page";
     if (title.includes("你的生活兴趣社区")) return "platform_shell_page";
   }
@@ -403,8 +431,16 @@ function invalidReason(input: { title: string; content: string; platform: Source
   const shell = platformShellFailure(platform, content, title);
   if (shell) {
     const reasonMap = {
-      wechat_mp: "微信公众号返回的是受限页面或异常页，未能读取到正文容器。",
-      xiaohongshu: "该小红书链接返回的是平台分享页或登录壳页，暂时无法直接提取正文。",
+      wechat_mp: shell === "deleted_or_unavailable"
+        ? "微信公众号文章已删除、不可见或内容不可用。"
+        : shell === "login_required"
+          ? "微信公众号文章需要登录或在平台内查看，服务端无法直接读取正文。"
+          : "微信公众号返回的是受限页面或异常页，未能读取到正文容器。",
+      xiaohongshu: shell === "login_required"
+        ? "小红书内容需要登录后查看，服务端无法直接提取正文。"
+        : shell === "blocked_by_platform"
+          ? "小红书限制了服务端访问，未能直接提取正文。"
+          : "该小红书链接返回的是平台分享页或登录壳页，暂时无法直接提取正文。",
       douyin: "该抖音链接返回的是动态分享页或平台壳页，暂时无法直接提取正文。",
       generic_web: "平台返回了壳页面或受限页面。"
     };
@@ -417,11 +453,13 @@ function invalidReason(input: { title: string; content: string; platform: Source
   if (content.length < minLength) {
     const platformReason = {
       wechat_mp: extractorUsed === "wechat_container_not_found" ? "未找到微信公众号正文容器 #js_content / .rich_media_content，可能被微信限制访问。" : "微信公众号正文提取结果过短，可能返回了壳页或异常页。",
-      xiaohongshu: "只提取到标题或简介，未获得稳定正文。",
+      xiaohongshu: "只提取到标题或简介，未获得稳定正文，可能需要浏览器渲染或登录态。",
       douyin: "只提取到标题或简介，未获得稳定图文正文。",
       generic_web: "正文过短或正文容器提取失败。"
     };
-    return { failureType: extractorUsed === "wechat_container_not_found" ? "container_not_found" : "content_too_short", failureReason: platformReason[platform] };
+    if (platform === "wechat_mp" && extractorUsed === "wechat_container_not_found") return { failureType: "empty_content", failureReason: platformReason[platform] };
+    if (platform === "xiaohongshu") return { failureType: "empty_content", failureReason: platformReason[platform] };
+    return { failureType: "content_too_short", failureReason: platformReason[platform] };
   }
   if (navigationNoiseScore(content) > 0.48) return { failureType: "unknown", failureReason: "正文噪声占比过高，可能混入导航、推荐或页脚内容。" };
   return null;
@@ -461,7 +499,7 @@ function parseWechatArticle(root: HtmlNode, url: string): ParseCandidate {
   for (const selector of ["#js_content", ".rich_media_content", ".rich_media_area_primary"]) {
     const element = queryFirst(root, [selector]);
     if (!element) continue;
-    const content = compactText(elementToText(element));
+    const content = elementToText(element);
     if (content.length > 80) return { title, content, sourcePlatform: "mp.weixin.qq.com", authorName, publishedAt, extractorUsed: selector, platform: "wechat_mp" };
   }
   const fallback = extractFallbackParagraphs(root);
@@ -480,12 +518,144 @@ function extractJsonTextFromHtml(html: string, patterns: RegExp[]) {
   return normalizeLines(matches).join("\n\n");
 }
 
+function cleanJsonString(value: string) {
+  return decodeEntities(value
+    .replace(/\\n/g, "\n")
+    .replace(/\\r/g, "\n")
+    .replace(/\\t/g, " ")
+    .replace(/\\"/g, "\"")
+    .replace(/\\\//g, "/")
+    .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16))));
+}
+
+function scriptTexts(root: HtmlNode) {
+  return queryAll(root, "script").map((script) => rawNodeText(script)).filter(Boolean);
+}
+
+function extractBalancedObject(text: string, marker: string) {
+  const markerIndex = text.indexOf(marker);
+  if (markerIndex < 0) return undefined;
+  const start = text.indexOf("{", markerIndex);
+  if (start < 0) return undefined;
+  let depth = 0;
+  let inString = false;
+  let quote = "";
+  let escaped = false;
+  for (let index = start; index < text.length; index += 1) {
+    const char = text[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === quote) {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === "\"" || char === "'") {
+      inString = true;
+      quote = char;
+      continue;
+    }
+    if (char === "{") depth += 1;
+    if (char === "}") depth -= 1;
+    if (depth === 0) return text.slice(start, index + 1);
+  }
+  return undefined;
+}
+
+function tryParseJson(raw: string) {
+  const candidates = [
+    raw,
+    raw.replace(/undefined/g, "null"),
+    raw.replace(/'/g, "\"").replace(/undefined/g, "null")
+  ];
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
+}
+
+function collectXhsFields(value: unknown, output: {
+  titles: string[];
+  bodies: string[];
+  authors: string[];
+  published: string[];
+  images: string[];
+}) {
+  if (!value || typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    for (const item of value) collectXhsFields(item, output);
+    return;
+  }
+  const record = value as Record<string, unknown>;
+  for (const [key, raw] of Object.entries(record)) {
+    if (typeof raw === "string") {
+      const normalized = compactText(cleanJsonString(raw));
+      if (!normalized) continue;
+      const lowerKey = key.toLowerCase();
+      if (["title", "displaytitle", "display_title", "notetitle"].includes(lowerKey) && normalized.length >= 2) output.titles.push(normalized);
+      if (["desc", "description", "content", "note_desc", "notedesc"].includes(lowerKey) && normalized.length >= 10) output.bodies.push(normalized);
+      if (["nickname", "nick_name", "author", "username", "user_name"].includes(lowerKey) && normalized.length >= 2) output.authors.push(normalized);
+      if (["time", "timestamp", "last_update_time", "publish_time", "date"].includes(lowerKey)) output.published.push(normalized);
+      if ((lowerKey.includes("url") || lowerKey.includes("image")) && /^https?:\/\//.test(normalized) && /\.(jpg|jpeg|png|webp)(\?|$)/i.test(normalized)) output.images.push(normalized);
+    } else {
+      collectXhsFields(raw, output);
+    }
+  }
+}
+
+function extractXhsStructuredData(root: HtmlNode, html: string) {
+  const output = { titles: [] as string[], bodies: [] as string[], authors: [] as string[], published: [] as string[], images: [] as string[] };
+  const scripts = scriptTexts(root);
+  for (const script of scripts) {
+    if (/__INITIAL_STATE__|window\.__INITIAL_STATE__/.test(script)) {
+      const raw = extractBalancedObject(script, "__INITIAL_STATE__");
+      const parsed = raw ? tryParseJson(raw) : undefined;
+      if (parsed) collectXhsFields(parsed, output);
+    }
+    if (/__NEXT_DATA__|application\/json|hydration|note|desc/i.test(script)) {
+      const trimmed = script.trim();
+      if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
+        const parsed = tryParseJson(trimmed);
+        if (parsed) collectXhsFields(parsed, output);
+      }
+    }
+  }
+  const regexText = extractJsonTextFromHtml(html, [
+    /"(?:desc|description|content|note_desc|noteDesc)"\s*:\s*"([^"]{20,})"/g,
+    /"(?:title|display_title|displayTitle)"\s*:\s*"([^"]{4,})"/g
+  ]);
+  if (regexText) output.bodies.push(regexText);
+  return {
+    title: output.titles.sort((a, b) => b.length - a.length)[0],
+    body: normalizeLines(output.bodies).join("\n\n"),
+    author: output.authors[0],
+    publishedAt: output.published[0],
+    imageUrls: Array.from(new Set(output.images)).slice(0, 12)
+  };
+}
+
 function parseXiaohongshuArticle(root: HtmlNode, html: string, url: string): ParseCandidate {
   const title = extractTitleFromDocument(root, url);
   const description = metaContent(root, [["name", "description"], ["property", "og:description"], ["name", "twitter:description"]]) ?? "";
-  const jsonText = extractJsonTextFromHtml(html, [/"desc"\s*:\s*"([^"]{20,})"/g, /"content"\s*:\s*"([^"]{20,})"/g, /"note_desc"\s*:\s*"([^"]{20,})"/g]);
-  const content = compactText([jsonText, description].filter(Boolean).join("\n\n"));
-  return { title, content, sourcePlatform: "xiaohongshu.com", extractorUsed: jsonText ? "xiaohongshu_ssr_json" : "xiaohongshu_meta_description", platform: "xiaohongshu" };
+  const structured = extractXhsStructuredData(root, html);
+  const content = compactText([structured.body, description].filter(Boolean).join("\n\n"));
+  return {
+    title: structured.title || title,
+    content,
+    sourcePlatform: "xiaohongshu.com",
+    authorName: structured.author,
+    publishedAt: structured.publishedAt,
+    imageUrls: structured.imageUrls,
+    extractorUsed: structured.body ? "xiaohongshu_hydration_json" : "xiaohongshu_meta_description",
+    platform: "xiaohongshu"
+  };
 }
 
 function parseDouyinArticle(root: HtmlNode, html: string, url: string): ParseCandidate {
@@ -499,7 +669,7 @@ function parseDouyinArticle(root: HtmlNode, html: string, url: string): ParseCan
 function extractJsonLdArticle(root: HtmlNode) {
   for (const script of queryAll(root, "script")) {
     if ((attr(script, "type") || "").toLowerCase() !== "application/ld+json") continue;
-    const raw = nodeText(script).trim();
+    const raw = rawNodeText(script).trim();
     if (!raw) continue;
     try {
       const parsed = JSON.parse(raw);
@@ -538,10 +708,21 @@ function parseGenericArticle(root: HtmlNode, url: string, sourcePlatform: string
 }
 
 function failureMessage(diagnostic: ParserDiagnostic) {
-  if (diagnostic.platform === "xiaohongshu") return "该小红书链接返回的是平台分享页或登录壳页，暂时无法直接提取正文。你可以手动复制正文粘贴导入、上传截图通过 OCR 转成阅读文本，或先保存为待处理链接。";
+  if (diagnostic.platform === "xiaohongshu") {
+    if (diagnostic.failureType === "unsupported_url_shape") return "该小红书链接没有进入具体笔记页，可能是首页、用户页、分享壳页或已失效短链。请打开原文后使用导入助手。";
+    if (diagnostic.failureType === "login_required") return "小红书内容需要登录后查看，服务端无法直接解析。请使用导入助手或手动粘贴。";
+    if (diagnostic.failureType === "blocked_by_platform") return "小红书限制了服务端访问。请打开原文后使用导入助手，或使用 OCR / 手动粘贴。";
+    if (diagnostic.failureType === "platform_shell_page") return "当前链接返回的是小红书平台壳页，不是正文页。请使用导入助手或手动粘贴。";
+    return "小红书内容可能需要浏览器渲染或登录态。请打开原文后使用导入助手，或使用 OCR / 手动粘贴。";
+  }
   if (diagnostic.platform === "douyin") return "该抖音链接返回的是动态分享页或平台壳页，暂时无法直接提取正文。你可以手动粘贴正文、上传截图 OCR，或先保存为待处理链接。";
-  if (diagnostic.platform === "wechat_mp") return diagnostic.failureReason || "微信公众号正文提取失败，请使用手动粘贴、OCR 或保存为待处理链接。";
-  if (diagnostic.failureType === "anti_crawler") return "平台限制了服务端访问，暂时无法直接解析正文。请使用手动粘贴、OCR，或保存为待处理链接。";
+  if (diagnostic.platform === "wechat_mp") {
+    if (diagnostic.failureType === "deleted_or_unavailable") return "公众号文章已删除、不可见或内容不可用。请检查原文链接。";
+    if (diagnostic.failureType === "login_required") return "该公众号内容需要在平台内登录后查看，服务端无法直接解析。请使用导入助手或手动粘贴正文。";
+    if (diagnostic.failureType === "blocked_by_platform" || diagnostic.failureType === "platform_shell_page") return "公众号文章可能限制服务端访问。请打开原文后使用导入助手，或手动粘贴正文。";
+    return diagnostic.failureReason || "微信公众号正文提取失败，请使用手动粘贴、OCR 或保存为待处理链接。";
+  }
+  if (diagnostic.failureType === "anti_crawler" || diagnostic.failureType === "blocked_by_platform") return "平台限制了服务端访问，暂时无法直接解析正文。请使用手动粘贴、OCR，或保存为待处理链接。";
   if (diagnostic.failureType === "login_required") return "该页面需要登录后查看，服务端无法读取正文。请使用手动粘贴、OCR，或保存为待处理链接。";
   if (diagnostic.failureType === "container_not_found") return "暂未识别到正文容器。可以使用手动粘贴、OCR，或保存为待处理链接。";
   return diagnostic.failureReason || "正文提取失败，请使用手动粘贴、OCR 或保存为待处理链接。";
@@ -631,6 +812,22 @@ export async function parseArticleFromUrl(url: string): Promise<ParsedArticle> {
   const html = await readHtml(response);
   const root = parse5.parse(html) as unknown as HtmlNode;
   const sourcePlatform = sourcePlatformLabel(platform, finalUrl);
+  if (platform === "xiaohongshu" && !supportedXiaohongshuUrlShape(finalUrl)) {
+    const diagnostic = createDiagnostic({
+      success: false,
+      platform,
+      title: extractTitleFromDocument(root, finalUrl),
+      content: "",
+      htmlLength: html.length,
+      httpStatus: response.status,
+      finalHost,
+      extractorUsed: "xiaohongshu_url_shape",
+      failureType: "unsupported_url_shape",
+      failureReason: "该小红书链接没有跳转到具体笔记页，可能是首页、用户页、分享壳页或已失效短链。"
+    });
+    parserLog("quality_failed", { hostname: originalHost, parserType: platform, status: response.status, finalHost, htmlLength: html.length, extractedLength: 0, failureType: diagnostic.failureType, failureReason: diagnostic.failureReason });
+    throw new ParserError(failureMessage(diagnostic), diagnostic);
+  }
   const candidate =
     platform === "wechat_mp"
       ? parseWechatArticle(root, finalUrl)
@@ -666,6 +863,7 @@ export async function parseArticleFromUrl(url: string): Promise<ParsedArticle> {
     sourcePlatform: candidate.sourcePlatform,
     authorName: candidate.authorName,
     publishedAt: candidate.publishedAt,
+    imageUrls: candidate.imageUrls,
     diagnostic: createDiagnostic({
       success: true,
       platform,
