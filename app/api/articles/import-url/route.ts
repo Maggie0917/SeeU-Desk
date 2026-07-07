@@ -4,6 +4,43 @@ import { prisma } from "@/lib/prisma";
 import { applyRecommendedTags, enrichArticleWithAi } from "@/lib/articles";
 import { detectSourcePlatform, parseArticleFromUrl, ParserError, type ParserDiagnostic } from "@/lib/services/parser";
 
+function safeHostname(input: string) {
+  try {
+    return new URL(input).hostname.replace(/^www\./, "");
+  } catch {
+    return "unknown";
+  }
+}
+
+function importLog(data: {
+  requestId: string;
+  routeStage: "request" | "parse" | "create_article" | "tags" | "ai_summary" | "response";
+  hostname?: string;
+  finalHost?: string;
+  parserType?: string;
+  httpStatus?: number;
+  htmlLength?: number;
+  extractedTextLength?: number;
+  extractorUsed?: string;
+  failureType?: string;
+  failureReason?: string;
+}) {
+  console.info("[import-url]", data);
+}
+
+function sanitizeLogText(value: string) {
+  return value
+    .replace(/(api[_-]?key|token|secret|password)=([^&\s]+)/gi, "$1=[redacted]")
+    .replace(/Bearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer [redacted]")
+    .replace(/sk-[A-Za-z0-9_-]{8,}/gi, "sk-[redacted]")
+    .slice(0, 240);
+}
+
+function safeErrorReason(error: unknown) {
+  if (error instanceof Error) return sanitizeLogText(error.message);
+  return "未知错误";
+}
+
 function platformLabel(platform: ReturnType<typeof detectSourcePlatform>, url: string) {
   if (platform === "wechat_mp") return "mp.weixin.qq.com";
   if (platform === "xiaohongshu") return "xiaohongshu.com";
@@ -16,20 +53,23 @@ function platformLabel(platform: ReturnType<typeof detectSourcePlatform>, url: s
 }
 
 export async function POST(request: Request) {
+  const requestId = crypto.randomUUID();
   const user = await requireUser();
   const body = await request.json().catch(() => ({}));
   const url = String(body.url ?? "").trim();
   const savePending = Boolean(body.savePending);
 
-  if (!url) return NextResponse.json({ error: "请粘贴文章链接" }, { status: 400 });
+  if (!url) return NextResponse.json({ error: "请粘贴文章链接", requestId }, { status: 400 });
   try {
     const parsedUrl = new URL(url);
     if (!["http:", "https:"].includes(parsedUrl.protocol)) {
-      return NextResponse.json({ error: "请粘贴 http 或 https 开头的文章链接" }, { status: 400 });
+      return NextResponse.json({ error: "请粘贴 http 或 https 开头的文章链接", requestId }, { status: 400 });
     }
   } catch {
-    return NextResponse.json({ error: "链接格式不正确，请粘贴完整文章链接" }, { status: 400 });
+    return NextResponse.json({ error: "链接格式不正确，请粘贴完整文章链接", requestId }, { status: 400 });
   }
+  const hostname = safeHostname(url);
+  importLog({ requestId, routeStage: "request", hostname, parserType: detectSourcePlatform(url) });
 
   if (savePending && body.diagnostic) {
     const diagnostic = body.diagnostic as Partial<ParserDiagnostic>;
@@ -49,11 +89,31 @@ export async function POST(request: Request) {
         isInReadLater: true
       }
     });
-    return NextResponse.json({ ok: true, articleId: article.id, pending: true, diagnostic });
+    importLog({
+      requestId,
+      routeStage: "create_article",
+      hostname,
+      parserType: platform,
+      failureType: diagnostic.failureType,
+      failureReason,
+      extractedTextLength: article.content.length
+    });
+    return NextResponse.json({ ok: true, articleId: article.id, pending: true, diagnostic, requestId });
   }
 
   try {
     const parsed = await parseArticleFromUrl(url);
+    importLog({
+      requestId,
+      routeStage: "parse",
+      hostname,
+      finalHost: parsed.diagnostic.finalHost,
+      parserType: parsed.diagnostic.platform,
+      httpStatus: parsed.diagnostic.httpStatus,
+      htmlLength: parsed.diagnostic.htmlLength,
+      extractedTextLength: parsed.content.length,
+      extractorUsed: parsed.diagnostic.extractorUsed
+    });
     const article = await prisma.article.create({
       data: {
         userId: user.id,
@@ -66,21 +126,73 @@ export async function POST(request: Request) {
         isInReadLater: true
       }
     });
-
-    await applyRecommendedTags({
-      userId: user.id,
-      articleId: article.id,
-      title: article.title,
-      content: article.content
-    });
-    await enrichArticleWithAi({
-      userId: user.id,
-      articleId: article.id,
-      title: article.title,
-      content: article.content
+    importLog({
+      requestId,
+      routeStage: "create_article",
+      hostname,
+      finalHost: parsed.diagnostic.finalHost,
+      parserType: parsed.diagnostic.platform,
+      httpStatus: parsed.diagnostic.httpStatus,
+      htmlLength: parsed.diagnostic.htmlLength,
+      extractedTextLength: parsed.content.length,
+      extractorUsed: parsed.diagnostic.extractorUsed
     });
 
-    return NextResponse.json({ ok: true, articleId: article.id, diagnostic: parsed.diagnostic });
+    const warnings: string[] = [];
+    try {
+      await applyRecommendedTags({
+        userId: user.id,
+        articleId: article.id,
+        title: article.title,
+        content: article.content
+      });
+      importLog({ requestId, routeStage: "tags", hostname, finalHost: parsed.diagnostic.finalHost, parserType: parsed.diagnostic.platform });
+    } catch (tagError) {
+      const failureReason = safeErrorReason(tagError);
+      warnings.push("标签推荐失败，可稍后手动调整标签。");
+      importLog({
+        requestId,
+        routeStage: "tags",
+        hostname,
+        finalHost: parsed.diagnostic.finalHost,
+        parserType: parsed.diagnostic.platform,
+        failureType: "post_process_failed",
+        failureReason
+      });
+    }
+
+    try {
+      await enrichArticleWithAi({
+        userId: user.id,
+        articleId: article.id,
+        title: article.title,
+        content: article.content
+      });
+      importLog({ requestId, routeStage: "ai_summary", hostname, finalHost: parsed.diagnostic.finalHost, parserType: parsed.diagnostic.platform });
+    } catch (aiError) {
+      const failureReason = safeErrorReason(aiError);
+      warnings.push("文章已导入，AI 摘要和方法论可在文章页稍后重试。");
+      importLog({
+        requestId,
+        routeStage: "ai_summary",
+        hostname,
+        finalHost: parsed.diagnostic.finalHost,
+        parserType: parsed.diagnostic.platform,
+        failureType: "post_process_failed",
+        failureReason
+      });
+    }
+
+    importLog({
+      requestId,
+      routeStage: "response",
+      hostname,
+      finalHost: parsed.diagnostic.finalHost,
+      parserType: parsed.diagnostic.platform,
+      extractedTextLength: parsed.content.length,
+      extractorUsed: parsed.diagnostic.extractorUsed
+    });
+    return NextResponse.json({ ok: true, articleId: article.id, diagnostic: parsed.diagnostic, warnings, requestId });
   } catch (error) {
     const diagnostic: ParserDiagnostic = error instanceof ParserError
       ? error.diagnostic
@@ -91,6 +203,19 @@ export async function POST(request: Request) {
           failureReason: error instanceof Error ? error.message : "解析失败",
           fallbackOptions: ["manual_paste", "ocr", "save_pending"]
         };
+    importLog({
+      requestId,
+      routeStage: error instanceof ParserError ? "parse" : "response",
+      hostname,
+      finalHost: diagnostic.finalHost,
+      parserType: diagnostic.platform,
+      httpStatus: diagnostic.httpStatus,
+      htmlLength: diagnostic.htmlLength,
+      extractedTextLength: diagnostic.contentLength,
+      extractorUsed: diagnostic.extractorUsed,
+      failureType: diagnostic.failureType,
+      failureReason: diagnostic.failureReason
+    });
 
     if (savePending) {
       const platform = diagnostic.platform || detectSourcePlatform(url);
@@ -109,14 +234,24 @@ export async function POST(request: Request) {
           isInReadLater: true
         }
       });
-      return NextResponse.json({ ok: true, articleId: article.id, pending: true, diagnostic });
+      importLog({
+        requestId,
+        routeStage: "create_article",
+        hostname,
+        parserType: platform,
+        failureType: diagnostic.failureType,
+        failureReason,
+        extractedTextLength: article.content.length
+      });
+      return NextResponse.json({ ok: true, articleId: article.id, pending: true, diagnostic, requestId });
     }
 
     return NextResponse.json(
       {
         error: error instanceof Error ? error.message : "解析失败",
         fallbackRequired: true,
-        diagnostic
+        diagnostic,
+        requestId
       },
       { status: 422 }
     );

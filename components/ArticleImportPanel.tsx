@@ -26,6 +26,7 @@ export function ArticleImportPanel() {
   const [ocrText, setOcrText] = useState("");
   const [importMethod, setImportMethod] = useState("");
   const [message, setMessage] = useState("");
+  const [requestId, setRequestId] = useState("");
   const [diagnostic, setDiagnostic] = useState<ParserDiagnostic | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -92,6 +93,7 @@ export function ArticleImportPanel() {
     event.preventDefault();
     setLoading(true);
     setDiagnostic(null);
+    setRequestId("");
     setMessage("正在解析网页正文...");
     const response = await fetch("/api/articles/import-url", {
       method: "POST",
@@ -99,6 +101,7 @@ export function ArticleImportPanel() {
       body: JSON.stringify({ url })
     });
     const data = await response.json().catch(() => ({}));
+    setRequestId(typeof data.requestId === "string" ? data.requestId : "");
     setLoading(false);
     if (!response.ok) {
       const nextDiagnostic = data.diagnostic as ParserDiagnostic | undefined;
@@ -107,6 +110,9 @@ export function ArticleImportPanel() {
       if (nextDiagnostic?.platform && !sourcePlatform) setSourcePlatform(diagnosticPlatformLabel(nextDiagnostic.platform));
       setMessage(data.error || specificFallbackTip(nextDiagnostic));
       return;
+    }
+    if (Array.isArray(data.warnings) && data.warnings.length > 0) {
+      setMessage(data.warnings.join(" "));
     }
     router.push(`/article/${data.articleId}`);
     router.refresh();
@@ -197,6 +203,7 @@ export function ArticleImportPanel() {
           </button>
         </div>
         {message ? <div className="mt-3 rounded-md border border-sky/30 bg-white px-3 py-2 text-sm text-ink">{message}</div> : null}
+        {requestId ? <div className="mt-2 text-xs text-moss">诊断 ID：{requestId}</div> : null}
         {diagnostic ? (
           <div className="mt-3 rounded-md border border-coral/25 bg-white p-3 text-sm text-ink">
             <div className="font-bold text-coral">解析诊断：{failureTypeLabel(diagnostic.failureType)}</div>
