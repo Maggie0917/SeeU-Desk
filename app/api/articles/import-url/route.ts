@@ -24,6 +24,10 @@ function importLog(data: {
   extractorUsed?: string;
   failureType?: string;
   failureReason?: string;
+  containsJsContent?: boolean;
+  selectorJsContentHit?: boolean;
+  wechatExtractedTextLength?: number;
+  wechatQualityFailureReason?: string;
 }) {
   console.info("[import-url]", data);
 }
@@ -112,7 +116,11 @@ export async function POST(request: Request) {
       httpStatus: parsed.diagnostic.httpStatus,
       htmlLength: parsed.diagnostic.htmlLength,
       extractedTextLength: parsed.content.length,
-      extractorUsed: parsed.diagnostic.extractorUsed
+      extractorUsed: parsed.diagnostic.extractorUsed,
+      containsJsContent: parsed.diagnostic.containsJsContent,
+      selectorJsContentHit: parsed.diagnostic.selectorJsContentHit,
+      wechatExtractedTextLength: parsed.diagnostic.wechatExtractedTextLength,
+      wechatQualityFailureReason: parsed.diagnostic.wechatQualityFailureReason
     });
     const article = await prisma.article.create({
       data: {
@@ -135,7 +143,11 @@ export async function POST(request: Request) {
       httpStatus: parsed.diagnostic.httpStatus,
       htmlLength: parsed.diagnostic.htmlLength,
       extractedTextLength: parsed.content.length,
-      extractorUsed: parsed.diagnostic.extractorUsed
+      extractorUsed: parsed.diagnostic.extractorUsed,
+      containsJsContent: parsed.diagnostic.containsJsContent,
+      selectorJsContentHit: parsed.diagnostic.selectorJsContentHit,
+      wechatExtractedTextLength: parsed.diagnostic.wechatExtractedTextLength,
+      wechatQualityFailureReason: parsed.diagnostic.wechatQualityFailureReason
     });
 
     const warnings: string[] = [];
@@ -190,7 +202,11 @@ export async function POST(request: Request) {
       finalHost: parsed.diagnostic.finalHost,
       parserType: parsed.diagnostic.platform,
       extractedTextLength: parsed.content.length,
-      extractorUsed: parsed.diagnostic.extractorUsed
+      extractorUsed: parsed.diagnostic.extractorUsed,
+      containsJsContent: parsed.diagnostic.containsJsContent,
+      selectorJsContentHit: parsed.diagnostic.selectorJsContentHit,
+      wechatExtractedTextLength: parsed.diagnostic.wechatExtractedTextLength,
+      wechatQualityFailureReason: parsed.diagnostic.wechatQualityFailureReason
     });
     return NextResponse.json({ ok: true, articleId: article.id, diagnostic: parsed.diagnostic, warnings, requestId });
   } catch (error) {
@@ -214,7 +230,11 @@ export async function POST(request: Request) {
       extractedTextLength: diagnostic.contentLength,
       extractorUsed: diagnostic.extractorUsed,
       failureType: diagnostic.failureType,
-      failureReason: diagnostic.failureReason
+      failureReason: diagnostic.failureReason,
+      containsJsContent: diagnostic.containsJsContent,
+      selectorJsContentHit: diagnostic.selectorJsContentHit,
+      wechatExtractedTextLength: diagnostic.wechatExtractedTextLength,
+      wechatQualityFailureReason: diagnostic.wechatQualityFailureReason
     });
 
     if (savePending) {

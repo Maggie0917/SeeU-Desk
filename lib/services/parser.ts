@@ -29,6 +29,10 @@ export type ParserDiagnostic = {
   extractorUsed?: string;
   failureReason?: string;
   failureType?: ParserFailureType;
+  containsJsContent?: boolean;
+  selectorJsContentHit?: boolean;
+  wechatExtractedTextLength?: number;
+  wechatQualityFailureReason?: string;
   fallbackOptions: Array<"manual_paste" | "ocr" | "save_pending">;
 };
 
@@ -91,6 +95,10 @@ function parserLog(event: string, data: {
   extractedLength?: number;
   failureType?: ParserFailureType;
   failureReason?: string;
+  containsJsContent?: boolean;
+  selectorJsContentHit?: boolean;
+  wechatExtractedTextLength?: number;
+  wechatQualityFailureReason?: string;
 }) {
   console.info("[article-parser]", {
     event,
@@ -101,7 +109,11 @@ function parserLog(event: string, data: {
     htmlLength: data.htmlLength,
     extractedLength: data.extractedLength,
     failureType: data.failureType,
-    failureReason: data.failureReason
+    failureReason: data.failureReason,
+    containsJsContent: data.containsJsContent,
+    selectorJsContentHit: data.selectorJsContentHit,
+    wechatExtractedTextLength: data.wechatExtractedTextLength,
+    wechatQualityFailureReason: data.wechatQualityFailureReason
   });
 }
 
@@ -440,9 +452,14 @@ function platformShellFailure(platform: SourcePlatformKind, content: string, tit
   return null;
 }
 
+function isWechatContentContainer(extractorUsed: string) {
+  return ["#js_content", ".rich_media_content", ".rich_media_area_primary"].includes(extractorUsed);
+}
+
 function invalidReason(input: { title: string; content: string; platform: SourcePlatformKind; extractorUsed: string }): Pick<ParserDiagnostic, "failureType" | "failureReason"> | null {
   const { title, content, platform, extractorUsed } = input;
   if (!title || title.length < 2) return { failureType: "container_not_found", failureReason: "标题提取失败，页面可能返回了异常内容。" };
+  if (platform === "wechat_mp" && isWechatContentContainer(extractorUsed) && content.length >= 200) return null;
   const shell = platformShellFailure(platform, content, title);
   if (shell) {
     const reasonMap = {
@@ -491,6 +508,10 @@ function createDiagnostic(input: {
   extractorUsed?: string;
   failureType?: ParserFailureType;
   failureReason?: string;
+  containsJsContent?: boolean;
+  selectorJsContentHit?: boolean;
+  wechatExtractedTextLength?: number;
+  wechatQualityFailureReason?: string;
 }): ParserDiagnostic {
   return {
     success: input.success,
@@ -503,7 +524,20 @@ function createDiagnostic(input: {
     extractorUsed: input.extractorUsed,
     failureType: input.failureType,
     failureReason: input.failureReason,
+    containsJsContent: input.containsJsContent,
+    selectorJsContentHit: input.selectorJsContentHit,
+    wechatExtractedTextLength: input.wechatExtractedTextLength,
+    wechatQualityFailureReason: input.wechatQualityFailureReason,
     fallbackOptions: FALLBACK_OPTIONS
+  };
+}
+
+function createWechatDiagnosticExtras(root: HtmlNode, html: string, candidate?: ParseCandidate, qualityFailure?: Pick<ParserDiagnostic, "failureType" | "failureReason"> | null) {
+  return {
+    containsJsContent: html.includes("js_content"),
+    selectorJsContentHit: Boolean(queryFirst(root, ["#js_content"])),
+    wechatExtractedTextLength: candidate?.content.length ?? 0,
+    wechatQualityFailureReason: qualityFailure?.failureReason
   };
 }
 
@@ -865,6 +899,7 @@ export async function parseArticleFromUrl(url: string): Promise<ParsedArticle> {
           : parseGenericArticle(root, finalUrl, sourcePlatform);
 
   const qualityFailure = invalidReason(candidate);
+  const wechatExtras = platform === "wechat_mp" ? createWechatDiagnosticExtras(root, html, candidate, qualityFailure) : {};
   if (qualityFailure && platform === "wechat_mp" && candidate.extractorUsed === "wechat_container_not_found") {
     try {
       const retry = await fetchPage(WECHAT_WEBVIEW_USER_AGENT);
@@ -873,6 +908,7 @@ export async function parseArticleFromUrl(url: string): Promise<ParsedArticle> {
         const retryRoot = parse5.parse(retryHtml) as unknown as HtmlNode;
         const retryCandidate = parseWechatArticle(retryRoot, retry.finalUrl, retryHtml);
         const retryFailure = invalidReason(retryCandidate);
+        const retryWechatExtras = createWechatDiagnosticExtras(retryRoot, retryHtml, retryCandidate, retryFailure);
         if (!retryFailure) {
           parserLog("success", {
             hostname: originalHost,
@@ -880,7 +916,8 @@ export async function parseArticleFromUrl(url: string): Promise<ParsedArticle> {
             status: retry.response.status,
             finalHost: retry.finalHost,
             htmlLength: retryHtml.length,
-            extractedLength: retryCandidate.content.length
+            extractedLength: retryCandidate.content.length,
+            ...retryWechatExtras
           });
           return {
             title: retryCandidate.title,
@@ -897,7 +934,8 @@ export async function parseArticleFromUrl(url: string): Promise<ParsedArticle> {
               htmlLength: retryHtml.length,
               httpStatus: retry.response.status,
               finalHost: retry.finalHost,
-              extractorUsed: `${retryCandidate.extractorUsed}_wechat_webview_retry`
+              extractorUsed: `${retryCandidate.extractorUsed}_wechat_webview_retry`,
+              ...retryWechatExtras
             })
           };
         }
@@ -917,13 +955,14 @@ export async function parseArticleFromUrl(url: string): Promise<ParsedArticle> {
       finalHost,
       extractorUsed: candidate.extractorUsed,
       failureType: qualityFailure.failureType,
-      failureReason: qualityFailure.failureReason
+      failureReason: qualityFailure.failureReason,
+      ...wechatExtras
     });
-    parserLog("quality_failed", { hostname: originalHost, parserType: platform, status: response.status, finalHost, htmlLength: html.length, extractedLength: candidate.content.length, failureType: diagnostic.failureType, failureReason: diagnostic.failureReason });
+    parserLog("quality_failed", { hostname: originalHost, parserType: platform, status: response.status, finalHost, htmlLength: html.length, extractedLength: candidate.content.length, failureType: diagnostic.failureType, failureReason: diagnostic.failureReason, ...wechatExtras });
     throw new ParserError(failureMessage(diagnostic), diagnostic);
   }
 
-  parserLog("success", { hostname: originalHost, parserType: platform, status: response.status, finalHost, htmlLength: html.length, extractedLength: candidate.content.length });
+  parserLog("success", { hostname: originalHost, parserType: platform, status: response.status, finalHost, htmlLength: html.length, extractedLength: candidate.content.length, ...wechatExtras });
 
   return {
     title: candidate.title,
@@ -940,7 +979,8 @@ export async function parseArticleFromUrl(url: string): Promise<ParsedArticle> {
       htmlLength: html.length,
       httpStatus: response.status,
       finalHost,
-      extractorUsed: candidate.extractorUsed
+      extractorUsed: candidate.extractorUsed,
+      ...wechatExtras
     })
   };
 }
