@@ -56,6 +56,14 @@ function query(root, selector) {
   return found;
 }
 
+function queryAll(root, selector) {
+  const found = [];
+  walk(root, (node) => {
+    if (matches(node, selector)) found.push(node);
+  });
+  return found;
+}
+
 function cleanText(node) {
   if (!node) return "";
   const lines = rawText(node)
@@ -66,15 +74,28 @@ function cleanText(node) {
   return Array.from(new Set(lines)).join("\n\n");
 }
 
-function classifyWechatPage(html, extractedTextLength) {
-  const compact = html.replace(/\s+/g, "");
+function countImages(node) {
+  if (!node) return 0;
+  return queryAll(node, "img").filter((item) => attr(item, "src") || attr(item, "data-src") || attr(item, "data-original") || attr(item, "data-ratio")).length;
+}
+
+function platformShellFailure(content, title) {
+  const compact = `${title || ""}${content || ""}`.replace(/\s+/g, "");
   if (/该内容已被发布者删除|此内容因违规无法查看|文章已删除|内容不存在/.test(compact)) return { failureType: "deleted_or_unavailable", failureReason: "文章已删除或内容不可见" };
   if (/请在微信客户端打开/.test(compact)) return { failureType: "blocked_by_platform", failureReason: "请在微信客户端打开" };
   if (/环境异常|参数错误/.test(compact)) return { failureType: "blocked_by_platform", failureReason: "微信返回环境异常或参数错误页" };
   if (/访问频繁|操作频繁/.test(compact)) return { failureType: "blocked_by_platform", failureReason: "访问频繁" };
   if (/验证码|安全验证|访问受限/.test(compact)) return { failureType: "blocked_by_platform", failureReason: "需要验证或访问受限" };
   if (/登录后查看|请登录/.test(compact)) return { failureType: "login_required", failureReason: "需要登录" };
-  if (extractedTextLength < 200) return { failureType: "empty_content", failureReason: "正文为空或低于 200 字" };
+  return null;
+}
+
+function classifyWechatPage(content, title, imageCount) {
+  if (content.length >= 200) return { failureType: undefined, failureReason: undefined };
+  if (imageCount >= 3) return { failureType: "image_heavy_article", failureReason: "该公众号文章可能以图片为主，建议使用 OCR 或截图导入。" };
+  const shell = platformShellFailure(content, title);
+  if (shell) return shell;
+  if (content.length < 200) return { failureType: "empty_content", failureReason: "正文为空或低于 200 字" };
   return { failureType: undefined, failureReason: undefined };
 }
 
@@ -107,7 +128,10 @@ async function diagnose(url) {
       const richContent = query(root, ".rich_media_content");
       const contentNode = jsContent || richContent || query(root, ".rich_media_area_primary");
       const extracted = cleanText(contentNode);
-      const classification = classifyWechatPage(html, extracted.length);
+      const imageCount = countImages(contentNode);
+      const title = cleanText(activityName || richTitle).split("\n")[0] || "";
+      const shell = platformShellFailure(extracted, title);
+      const classification = classifyWechatPage(extracted, title, imageCount);
       console.log(JSON.stringify({
         mode,
         originalHost: hostOf(url),
@@ -120,9 +144,14 @@ async function diagnose(url) {
         publishTimeHit: Boolean(publishTime),
         jsContentHit: Boolean(jsContent),
         richMediaContentHit: Boolean(richContent),
+        title,
         extractedTextLength: extracted.length,
+        imageCount,
+        invalidReason: classification.failureType,
+        platformShellFailure: shell?.failureType,
         failureType: classification.failureType,
-        failureReason: classification.failureReason
+        failureReason: classification.failureReason,
+        parseSuccess: !classification.failureType
       }));
     } catch (error) {
       console.log(JSON.stringify({
@@ -151,6 +180,6 @@ if (urls.length < 1) {
   process.exit(1);
 }
 
-for (const url of urls.slice(0, 3)) {
+for (const url of urls) {
   await diagnose(url);
 }

@@ -14,6 +14,7 @@ export type ParserFailureType =
   | "anti_crawler"
   | "network_error"
   | "empty_content"
+  | "image_heavy_article"
   | "parse_failed"
   | "unsupported_url_shape"
   | "unknown";
@@ -33,6 +34,10 @@ export type ParserDiagnostic = {
   selectorJsContentHit?: boolean;
   wechatExtractedTextLength?: number;
   wechatQualityFailureReason?: string;
+  imageCount?: number;
+  invalidReason?: string;
+  platformShellFailure?: ParserFailureType | null;
+  routeStage?: string;
   fallbackOptions: Array<"manual_paste" | "ocr" | "save_pending">;
 };
 
@@ -57,6 +62,7 @@ type HtmlNode = {
 type ParseCandidate = Omit<ParsedArticle, "diagnostic"> & {
   extractorUsed: string;
   platform: SourcePlatformKind;
+  imageCount?: number;
 };
 
 export class ParserError extends Error {
@@ -99,6 +105,9 @@ function parserLog(event: string, data: {
   selectorJsContentHit?: boolean;
   wechatExtractedTextLength?: number;
   wechatQualityFailureReason?: string;
+  imageCount?: number;
+  invalidReason?: string;
+  platformShellFailure?: ParserFailureType | null;
 }) {
   console.info("[article-parser]", {
     event,
@@ -113,7 +122,10 @@ function parserLog(event: string, data: {
     containsJsContent: data.containsJsContent,
     selectorJsContentHit: data.selectorJsContentHit,
     wechatExtractedTextLength: data.wechatExtractedTextLength,
-    wechatQualityFailureReason: data.wechatQualityFailureReason
+    wechatQualityFailureReason: data.wechatQualityFailureReason,
+    imageCount: data.imageCount,
+    invalidReason: data.invalidReason,
+    platformShellFailure: data.platformShellFailure
   });
 }
 
@@ -193,6 +205,9 @@ function isNoiseNode(node: HtmlNode) {
   if (attr(node, "hidden") !== undefined || attr(node, "aria-hidden") === "true") return true;
   const style = (attr(node, "style") || "").replace(/\s+/g, "").toLowerCase();
   if (style.includes("display:none") || style.includes("visibility:hidden")) return true;
+  const id = (attr(node, "id") || "").toLowerCase();
+  const classes = classList(node).map((item) => item.toLowerCase());
+  if (id === "js_content" || classes.some((item) => item === "rich_media_content" || item === "rich_media_area_primary")) return false;
   const marker = `${attr(node, "id") || ""} ${attr(node, "class") || ""}`.toLowerCase();
   return /advert|recommend|footer|comment|sidebar|share|login|related|qr_code|reward/.test(marker);
 }
@@ -200,6 +215,7 @@ function isNoiseNode(node: HtmlNode) {
 function nodeText(node: HtmlNode): string {
   if (node.nodeName === "#text") return node.value || "";
   if (isNoiseNode(node)) return "";
+  if (tagName(node) === "br") return "\n";
   return children(node).map(nodeText).join(" ");
 }
 
@@ -223,12 +239,21 @@ function normalizeLines(lines: string[]) {
 
 function elementToText(element: HtmlNode) {
   const lines: string[] = [];
-  walk(element, (node) => {
-    if (node === element) return;
-    if (!BLOCK_TAGS.has(tagName(node))) return;
-    const text = nodeText(node);
-    if (compactText(text).length > 6) lines.push(text);
-  });
+  function collect(node: HtmlNode) {
+    if (node !== element && isNoiseNode(node)) return;
+    const tag = tagName(node);
+    if (node !== element && BLOCK_TAGS.has(tag)) {
+      const text = nodeText(node);
+      if (compactText(text).length > 6) lines.push(text);
+      return;
+    }
+    if (tag === "br") {
+      lines.push("\n");
+      return;
+    }
+    for (const child of children(node)) collect(child);
+  }
+  collect(element);
   const normalized = normalizeLines(lines);
   if (normalized.join("\n").length > 120) return normalized.join("\n\n");
   return normalizeLines(nodeText(element).split(/\n+/)).join("\n\n");
@@ -456,10 +481,13 @@ function isWechatContentContainer(extractorUsed: string) {
   return ["#js_content", ".rich_media_content", ".rich_media_area_primary"].includes(extractorUsed);
 }
 
-function invalidReason(input: { title: string; content: string; platform: SourcePlatformKind; extractorUsed: string }): Pick<ParserDiagnostic, "failureType" | "failureReason"> | null {
-  const { title, content, platform, extractorUsed } = input;
+function invalidReason(input: { title: string; content: string; platform: SourcePlatformKind; extractorUsed: string; imageCount?: number }): Pick<ParserDiagnostic, "failureType" | "failureReason"> | null {
+  const { title, content, platform, extractorUsed, imageCount = 0 } = input;
   if (!title || title.length < 2) return { failureType: "container_not_found", failureReason: "标题提取失败，页面可能返回了异常内容。" };
   if (platform === "wechat_mp" && isWechatContentContainer(extractorUsed) && content.length >= 200) return null;
+  if (platform === "wechat_mp" && isWechatContentContainer(extractorUsed) && content.length < 200 && imageCount >= 3) {
+    return { failureType: "image_heavy_article", failureReason: "该公众号文章可能以图片为主，建议使用 OCR 或截图导入。" };
+  }
   const shell = platformShellFailure(platform, content, title);
   if (shell) {
     const reasonMap = {
@@ -512,6 +540,10 @@ function createDiagnostic(input: {
   selectorJsContentHit?: boolean;
   wechatExtractedTextLength?: number;
   wechatQualityFailureReason?: string;
+  imageCount?: number;
+  invalidReason?: string;
+  platformShellFailure?: ParserFailureType | null;
+  routeStage?: string;
 }): ParserDiagnostic {
   return {
     success: input.success,
@@ -528,29 +560,54 @@ function createDiagnostic(input: {
     selectorJsContentHit: input.selectorJsContentHit,
     wechatExtractedTextLength: input.wechatExtractedTextLength,
     wechatQualityFailureReason: input.wechatQualityFailureReason,
+    imageCount: input.imageCount,
+    invalidReason: input.invalidReason,
+    platformShellFailure: input.platformShellFailure,
+    routeStage: input.routeStage,
     fallbackOptions: FALLBACK_OPTIONS
   };
 }
 
 function createWechatDiagnosticExtras(root: HtmlNode, html: string, candidate?: ParseCandidate, qualityFailure?: Pick<ParserDiagnostic, "failureType" | "failureReason"> | null) {
+  const shellFailure = candidate ? platformShellFailure(candidate.platform, candidate.content, candidate.title) : null;
   return {
     containsJsContent: html.includes("js_content"),
     selectorJsContentHit: Boolean(queryFirst(root, ["#js_content"])),
     wechatExtractedTextLength: candidate?.content.length ?? 0,
-    wechatQualityFailureReason: qualityFailure?.failureReason
+    wechatQualityFailureReason: qualityFailure?.failureReason,
+    imageCount: candidate?.imageCount ?? 0,
+    invalidReason: qualityFailure?.failureType,
+    platformShellFailure: shellFailure
   };
+}
+
+function countImages(element: HtmlNode) {
+  return queryAll(element, "img").filter((node) => {
+    return Boolean(
+      attr(node, "src")
+      || attr(node, "data-src")
+      || attr(node, "data-original")
+      || attr(node, "data-backsrc")
+      || attr(node, "data-ratio")
+    );
+  }).length;
 }
 
 function parseWechatArticle(root: HtmlNode, url: string, html?: string): ParseCandidate {
   const title = extractTitleFromDocument(root, url);
   const authorName = extractAuthor(root);
   const publishedAt = extractPublishedAt(root, html);
+  let firstContainerCandidate: ParseCandidate | null = null;
   for (const selector of ["#js_content", ".rich_media_content", ".rich_media_area_primary"]) {
     const element = queryFirst(root, [selector]);
     if (!element) continue;
     const content = elementToText(element);
-    if (content.length > 80) return { title, content, sourcePlatform: "mp.weixin.qq.com", authorName, publishedAt, extractorUsed: selector, platform: "wechat_mp" };
+    const imageCount = countImages(element);
+    const candidate = { title, content, sourcePlatform: "mp.weixin.qq.com", authorName, publishedAt, extractorUsed: selector, platform: "wechat_mp" as const, imageCount };
+    if (!firstContainerCandidate) firstContainerCandidate = candidate;
+    if (content.length > 80) return candidate;
   }
+  if (firstContainerCandidate) return firstContainerCandidate;
   const fallback = extractFallbackParagraphs(root);
   return { title, content: compactText(fallback.content), sourcePlatform: "mp.weixin.qq.com", authorName, publishedAt, extractorUsed: fallback.content.length > 80 ? fallback.extractorUsed : "wechat_container_not_found", platform: "wechat_mp" };
 }

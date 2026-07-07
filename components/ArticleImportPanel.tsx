@@ -13,6 +13,14 @@ type ParserDiagnostic = {
   extractorUsed?: string;
   failureReason?: string;
   failureType?: string;
+  containsJsContent?: boolean;
+  selectorJsContentHit?: boolean;
+  wechatExtractedTextLength?: number;
+  wechatQualityFailureReason?: string;
+  imageCount?: number;
+  invalidReason?: string;
+  platformShellFailure?: string | null;
+  routeStage?: string;
   fallbackOptions?: string[];
 };
 
@@ -51,6 +59,7 @@ export function ArticleImportPanel() {
       anti_crawler: "平台限制访问",
       network_error: "网络请求失败",
       empty_content: "空正文",
+      image_heavy_article: "图片型文章",
       parse_failed: "解析失败",
       unsupported_url_shape: "暂不支持的链接形态",
       unknown: "未知原因"
@@ -60,6 +69,11 @@ export function ArticleImportPanel() {
   function specificFallbackTip(nextDiagnostic?: ParserDiagnostic) {
     if (!nextDiagnostic) return "解析失败，可以改用手动正文、OCR 或保存为待处理链接";
     if (nextDiagnostic.platform === "wechat_mp") {
+      if (nextDiagnostic.routeStage === "create_article") return "正文已解析，但保存文章失败，请稍后重试。";
+      if (nextDiagnostic.failureType === "image_heavy_article") return "该公众号文章可能以图片为主，建议上传截图 OCR 导入，或手动粘贴图片中的文字。";
+      if (nextDiagnostic.containsJsContent === false) return "服务端未拿到公众号正文容器，可能是微信返回了异常页。请检查原文是否正常打开，或使用手动粘贴 / OCR。";
+      if (nextDiagnostic.selectorJsContentHit && (nextDiagnostic.wechatExtractedTextLength ?? nextDiagnostic.contentLength ?? 0) < 200) return "已找到公众号正文容器，但提取出的正文过短，可能是页面结构特殊或以图片为主。建议 OCR 或手动粘贴。";
+      if (nextDiagnostic.platformShellFailure) return "系统判断该页面可能是异常页。请检查原文是否正常打开，或使用手动粘贴 / OCR。";
       if (nextDiagnostic.failureType === "deleted_or_unavailable") return "公众号文章已删除、不可见或内容不可用。你可以检查原文链接，或保存为待处理链接。";
       if (nextDiagnostic.failureType === "login_required") return "该公众号内容需要在平台内登录后查看，服务端无法直接解析。请使用导入助手或手动粘贴正文。";
       if (nextDiagnostic.failureType === "blocked_by_platform" || nextDiagnostic.failureType === "platform_shell_page") return "公众号文章可能限制服务端访问。请打开原文后使用导入助手，或手动粘贴正文。";
@@ -115,10 +129,11 @@ export function ArticleImportPanel() {
     setLoading(false);
     if (!response.ok) {
       const nextDiagnostic = data.diagnostic as ParserDiagnostic | undefined;
+      if (nextDiagnostic && typeof data.routeStage === "string" && !nextDiagnostic.routeStage) nextDiagnostic.routeStage = data.routeStage;
       setDiagnostic(nextDiagnostic ?? null);
       if (isUsefulTitle(nextDiagnostic?.title) && !title) setTitle(nextDiagnostic!.title!);
       if (nextDiagnostic?.platform && !sourcePlatform) setSourcePlatform(diagnosticPlatformLabel(nextDiagnostic.platform));
-      setMessage(data.error || specificFallbackTip(nextDiagnostic));
+      setMessage(specificFallbackTip(nextDiagnostic) || data.error || "解析失败");
       return;
     }
     if (Array.isArray(data.warnings) && data.warnings.length > 0) {
@@ -230,7 +245,18 @@ export function ArticleImportPanel() {
               平台：{diagnosticPlatformLabel(diagnostic.platform)}；正文长度：{diagnostic.contentLength ?? 0}；提取器：{diagnostic.extractorUsed || "未命中"}
               {diagnostic.httpStatus ? `；HTTP：${diagnostic.httpStatus}` : ""}
               {diagnostic.finalHost ? `；最终站点：${diagnostic.finalHost}` : ""}
+              {diagnostic.routeStage ? `；阶段：${diagnostic.routeStage}` : ""}
             </div>
+            {diagnostic.platform === "wechat_mp" ? (
+              <div className="mt-2 grid gap-1 rounded-md bg-paper px-3 py-2 text-xs text-moss md:grid-cols-2">
+                <div>包含 js_content：{diagnostic.containsJsContent === undefined ? "未知" : diagnostic.containsJsContent ? "是" : "否"}</div>
+                <div>#js_content 命中：{diagnostic.selectorJsContentHit === undefined ? "未知" : diagnostic.selectorJsContentHit ? "是" : "否"}</div>
+                <div>微信正文长度：{diagnostic.wechatExtractedTextLength ?? diagnostic.contentLength ?? 0}</div>
+                <div>图片数量：{diagnostic.imageCount ?? 0}</div>
+                <div>质量判断：{diagnostic.invalidReason || "未记录"}</div>
+                <div>异常页判断：{diagnostic.platformShellFailure || "未命中"}</div>
+              </div>
+            ) : null}
             <div className="mt-1 text-moss">{diagnostic.failureReason}</div>
             <div className="mt-2 rounded-md bg-paper px-3 py-2 text-moss">
               {specificFallbackTip(diagnostic)}

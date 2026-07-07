@@ -28,6 +28,9 @@ function importLog(data: {
   selectorJsContentHit?: boolean;
   wechatExtractedTextLength?: number;
   wechatQualityFailureReason?: string;
+  imageCount?: number;
+  invalidReason?: string;
+  platformShellFailure?: string | null;
 }) {
   console.info("[import-url]", data);
 }
@@ -120,20 +123,50 @@ export async function POST(request: Request) {
       containsJsContent: parsed.diagnostic.containsJsContent,
       selectorJsContentHit: parsed.diagnostic.selectorJsContentHit,
       wechatExtractedTextLength: parsed.diagnostic.wechatExtractedTextLength,
-      wechatQualityFailureReason: parsed.diagnostic.wechatQualityFailureReason
+      wechatQualityFailureReason: parsed.diagnostic.wechatQualityFailureReason,
+      imageCount: parsed.diagnostic.imageCount,
+      invalidReason: parsed.diagnostic.invalidReason,
+      platformShellFailure: parsed.diagnostic.platformShellFailure
     });
-    const article = await prisma.article.create({
-      data: {
-        userId: user.id,
-        title: parsed.title,
-        sourceUrl: url,
-        sourcePlatform: parsed.sourcePlatform,
-        authorName: parsed.authorName,
-        content: parsed.content,
-        readingStatus: "unread",
-        isInReadLater: true
-      }
-    });
+    let article;
+    try {
+      article = await prisma.article.create({
+        data: {
+          userId: user.id,
+          title: parsed.title,
+          sourceUrl: url,
+          sourcePlatform: parsed.sourcePlatform,
+          authorName: parsed.authorName,
+          content: parsed.content,
+          readingStatus: "unread",
+          isInReadLater: true
+        }
+      });
+    } catch (createError) {
+      const failureReason = safeErrorReason(createError);
+      const diagnostic = { ...parsed.diagnostic, success: false, failureType: "unknown" as const, failureReason: "正文已解析，但保存文章失败，请稍后重试。", routeStage: "create_article" };
+      importLog({
+        requestId,
+        routeStage: "create_article",
+        hostname,
+        finalHost: parsed.diagnostic.finalHost,
+        parserType: parsed.diagnostic.platform,
+        httpStatus: parsed.diagnostic.httpStatus,
+        htmlLength: parsed.diagnostic.htmlLength,
+        extractedTextLength: parsed.content.length,
+        extractorUsed: parsed.diagnostic.extractorUsed,
+        failureType: "create_article_failed",
+        failureReason,
+        containsJsContent: parsed.diagnostic.containsJsContent,
+        selectorJsContentHit: parsed.diagnostic.selectorJsContentHit,
+        wechatExtractedTextLength: parsed.diagnostic.wechatExtractedTextLength,
+        wechatQualityFailureReason: parsed.diagnostic.wechatQualityFailureReason,
+        imageCount: parsed.diagnostic.imageCount,
+        invalidReason: parsed.diagnostic.invalidReason,
+        platformShellFailure: parsed.diagnostic.platformShellFailure
+      });
+      return NextResponse.json({ error: diagnostic.failureReason, fallbackRequired: true, diagnostic, requestId, routeStage: "create_article" }, { status: 500 });
+    }
     importLog({
       requestId,
       routeStage: "create_article",
@@ -147,7 +180,10 @@ export async function POST(request: Request) {
       containsJsContent: parsed.diagnostic.containsJsContent,
       selectorJsContentHit: parsed.diagnostic.selectorJsContentHit,
       wechatExtractedTextLength: parsed.diagnostic.wechatExtractedTextLength,
-      wechatQualityFailureReason: parsed.diagnostic.wechatQualityFailureReason
+      wechatQualityFailureReason: parsed.diagnostic.wechatQualityFailureReason,
+      imageCount: parsed.diagnostic.imageCount,
+      invalidReason: parsed.diagnostic.invalidReason,
+      platformShellFailure: parsed.diagnostic.platformShellFailure
     });
 
     const warnings: string[] = [];
@@ -206,9 +242,12 @@ export async function POST(request: Request) {
       containsJsContent: parsed.diagnostic.containsJsContent,
       selectorJsContentHit: parsed.diagnostic.selectorJsContentHit,
       wechatExtractedTextLength: parsed.diagnostic.wechatExtractedTextLength,
-      wechatQualityFailureReason: parsed.diagnostic.wechatQualityFailureReason
+      wechatQualityFailureReason: parsed.diagnostic.wechatQualityFailureReason,
+      imageCount: parsed.diagnostic.imageCount,
+      invalidReason: parsed.diagnostic.invalidReason,
+      platformShellFailure: parsed.diagnostic.platformShellFailure
     });
-    return NextResponse.json({ ok: true, articleId: article.id, diagnostic: parsed.diagnostic, warnings, requestId });
+    return NextResponse.json({ ok: true, articleId: article.id, diagnostic: { ...parsed.diagnostic, routeStage: "response" }, warnings, requestId, routeStage: "response" });
   } catch (error) {
     const diagnostic: ParserDiagnostic = error instanceof ParserError
       ? error.diagnostic
@@ -217,11 +256,14 @@ export async function POST(request: Request) {
           platform: detectSourcePlatform(url),
           failureType: "unknown" as const,
           failureReason: error instanceof Error ? error.message : "解析失败",
+          routeStage: "response",
           fallbackOptions: ["manual_paste", "ocr", "save_pending"]
         };
+    const routeStage = error instanceof ParserError ? "parse" : "response";
+    const responseDiagnostic = { ...diagnostic, routeStage };
     importLog({
       requestId,
-      routeStage: error instanceof ParserError ? "parse" : "response",
+      routeStage,
       hostname,
       finalHost: diagnostic.finalHost,
       parserType: diagnostic.platform,
@@ -234,7 +276,10 @@ export async function POST(request: Request) {
       containsJsContent: diagnostic.containsJsContent,
       selectorJsContentHit: diagnostic.selectorJsContentHit,
       wechatExtractedTextLength: diagnostic.wechatExtractedTextLength,
-      wechatQualityFailureReason: diagnostic.wechatQualityFailureReason
+      wechatQualityFailureReason: diagnostic.wechatQualityFailureReason,
+      imageCount: diagnostic.imageCount,
+      invalidReason: diagnostic.invalidReason,
+      platformShellFailure: diagnostic.platformShellFailure
     });
 
     if (savePending) {
@@ -270,8 +315,9 @@ export async function POST(request: Request) {
       {
         error: error instanceof Error ? error.message : "解析失败",
         fallbackRequired: true,
-        diagnostic,
-        requestId
+        diagnostic: responseDiagnostic,
+        requestId,
+        routeStage
       },
       { status: 422 }
     );
