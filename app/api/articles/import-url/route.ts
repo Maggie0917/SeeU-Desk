@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { applyRecommendedTags, enrichArticleWithAi } from "@/lib/articles";
 import { detectSourcePlatform, parseArticleFromUrl, ParserError, type ParserDiagnostic } from "@/lib/services/parser";
 
 function safeHostname(input: string) {
@@ -78,6 +77,23 @@ export async function POST(request: Request) {
   const hostname = safeHostname(url);
   importLog({ requestId, routeStage: "request", hostname, parserType: detectSourcePlatform(url) });
 
+  const existingArticle = await prisma.article.findFirst({
+    where: { userId: user.id, sourceUrl: url, isDeleted: false },
+    select: { id: true }
+  });
+  if (existingArticle) {
+    importLog({ requestId, routeStage: "response", hostname, parserType: detectSourcePlatform(url) });
+    return NextResponse.json({
+      ok: true,
+      existing: true,
+      articleId: existingArticle.id,
+      detailPath: `/article/${existingArticle.id}`,
+      message: "文章已存在，正在打开已有文章",
+      requestId,
+      routeStage: "response"
+    });
+  }
+
   if (savePending && body.diagnostic) {
     const diagnostic = body.diagnostic as Partial<ParserDiagnostic>;
     const platform = diagnostic.platform || detectSourcePlatform(url);
@@ -105,7 +121,17 @@ export async function POST(request: Request) {
       failureReason,
       extractedTextLength: article.content.length
     });
-    return NextResponse.json({ ok: true, articleId: article.id, pending: true, diagnostic, requestId });
+    return NextResponse.json({
+      ok: true,
+      created: true,
+      articleId: article.id,
+      detailPath: `/article/${article.id}`,
+      pending: true,
+      diagnostic,
+      message: "待处理链接已保存",
+      requestId,
+      routeStage: "response"
+    });
   }
 
   try {
@@ -186,51 +212,6 @@ export async function POST(request: Request) {
       platformShellFailure: parsed.diagnostic.platformShellFailure
     });
 
-    const warnings: string[] = [];
-    try {
-      await applyRecommendedTags({
-        userId: user.id,
-        articleId: article.id,
-        title: article.title,
-        content: article.content
-      });
-      importLog({ requestId, routeStage: "tags", hostname, finalHost: parsed.diagnostic.finalHost, parserType: parsed.diagnostic.platform });
-    } catch (tagError) {
-      const failureReason = safeErrorReason(tagError);
-      warnings.push("标签推荐失败，可稍后手动调整标签。");
-      importLog({
-        requestId,
-        routeStage: "tags",
-        hostname,
-        finalHost: parsed.diagnostic.finalHost,
-        parserType: parsed.diagnostic.platform,
-        failureType: "post_process_failed",
-        failureReason
-      });
-    }
-
-    try {
-      await enrichArticleWithAi({
-        userId: user.id,
-        articleId: article.id,
-        title: article.title,
-        content: article.content
-      });
-      importLog({ requestId, routeStage: "ai_summary", hostname, finalHost: parsed.diagnostic.finalHost, parserType: parsed.diagnostic.platform });
-    } catch (aiError) {
-      const failureReason = safeErrorReason(aiError);
-      warnings.push("文章已导入，AI 摘要和方法论可在文章页稍后重试。");
-      importLog({
-        requestId,
-        routeStage: "ai_summary",
-        hostname,
-        finalHost: parsed.diagnostic.finalHost,
-        parserType: parsed.diagnostic.platform,
-        failureType: "post_process_failed",
-        failureReason
-      });
-    }
-
     importLog({
       requestId,
       routeStage: "response",
@@ -247,7 +228,17 @@ export async function POST(request: Request) {
       invalidReason: parsed.diagnostic.invalidReason,
       platformShellFailure: parsed.diagnostic.platformShellFailure
     });
-    return NextResponse.json({ ok: true, articleId: article.id, diagnostic: { ...parsed.diagnostic, routeStage: "response" }, warnings, requestId, routeStage: "response" });
+    return NextResponse.json({
+      ok: true,
+      created: true,
+      articleId: article.id,
+      detailPath: `/article/${article.id}`,
+      message: "导入成功",
+      enrichmentWarning: "文章已导入，AI 摘要和方法论可在文章页稍后生成。",
+      diagnostic: { ...parsed.diagnostic, routeStage: "response" },
+      requestId,
+      routeStage: "response"
+    });
   } catch (error) {
     const diagnostic: ParserDiagnostic = error instanceof ParserError
       ? error.diagnostic
@@ -308,7 +299,17 @@ export async function POST(request: Request) {
         failureReason,
         extractedTextLength: article.content.length
       });
-      return NextResponse.json({ ok: true, articleId: article.id, pending: true, diagnostic, requestId });
+      return NextResponse.json({
+        ok: true,
+        created: true,
+        articleId: article.id,
+        detailPath: `/article/${article.id}`,
+        pending: true,
+        diagnostic,
+        message: "待处理链接已保存",
+        requestId,
+        routeStage: "response"
+      });
     }
 
     return NextResponse.json(

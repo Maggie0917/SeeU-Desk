@@ -21,20 +21,32 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
 
   if (target === "summary") {
     const summary = await generateArticleSummary(article, { userId: user.id, tags: tagNames });
-    await prisma.article.update({
+    const updated = await prisma.article.update({
       where: { id: article.id, userId: user.id },
       data: { summary: summary.text, keywords: await generateKeywords(article.title, article.content) }
     });
-    return NextResponse.json({ ok: true, aiSource: summary.source, warnings: [summary.warning].filter(Boolean) });
+    return NextResponse.json({
+      ok: true,
+      aiSource: summary.source,
+      summary: updated.summary,
+      methodologyAndInsights: updated.methodologyAndInsights,
+      warnings: [summary.warning].filter(Boolean)
+    });
   }
 
   if (target === "methodology") {
     const methodologyAndInsights = await generateMethodologyAndInsights(article, article.highlights, { userId: user.id, tags: tagNames });
-    await prisma.article.update({
+    const updated = await prisma.article.update({
       where: { id: article.id, userId: user.id },
       data: { methodologyAndInsights: methodologyAndInsights.text }
     });
-    return NextResponse.json({ ok: true, aiSource: methodologyAndInsights.source, warnings: [methodologyAndInsights.warning].filter(Boolean) });
+    return NextResponse.json({
+      ok: true,
+      aiSource: methodologyAndInsights.source,
+      summary: updated.summary,
+      methodologyAndInsights: updated.methodologyAndInsights,
+      warnings: [methodologyAndInsights.warning].filter(Boolean)
+    });
   }
 
   const result = await enrichArticleWithAi({
@@ -44,16 +56,23 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     content: article.content,
     myOpinion: article.myOpinion
   });
-  await applyRecommendedTags({
-    userId: user.id,
-    articleId: id,
-    title: article.title,
-    content: article.content
-  });
+  const warnings = [...result.warnings];
+  try {
+    await applyRecommendedTags({
+      userId: user.id,
+      articleId: id,
+      title: article.title,
+      content: article.content
+    });
+  } catch {
+    warnings.push("标签推荐失败，可稍后手动调整标签。");
+  }
 
   return NextResponse.json({
     ok: true,
     aiSource: result.aiSource,
-    warnings: result.warnings
+    summary: result.article.summary,
+    methodologyAndInsights: result.article.methodologyAndInsights,
+    warnings
   });
 }

@@ -127,6 +127,12 @@ export function ArticleImportPanel() {
     const data = await response.json().catch(() => ({}));
     setRequestId(typeof data.requestId === "string" ? data.requestId : "");
     setLoading(false);
+    if (data?.ok === true && data?.articleId) {
+      setMessage(data.enrichmentWarning || data.message || (data.existing ? "文章已存在，正在打开已有文章" : "导入成功"));
+      router.push(data.detailPath || `/article/${data.articleId}`);
+      router.refresh();
+      return;
+    }
     if (!response.ok) {
       const nextDiagnostic = data.diagnostic as ParserDiagnostic | undefined;
       if (nextDiagnostic && typeof data.routeStage === "string" && !nextDiagnostic.routeStage) nextDiagnostic.routeStage = data.routeStage;
@@ -139,8 +145,7 @@ export function ArticleImportPanel() {
     if (Array.isArray(data.warnings) && data.warnings.length > 0) {
       setMessage(data.warnings.join(" "));
     }
-    router.push(`/article/${data.articleId}`);
-    router.refresh();
+    setMessage(data.error || "导入成功响应缺少文章 ID，请稍后重试。");
   }
 
   async function savePendingImport() {
@@ -157,12 +162,16 @@ export function ArticleImportPanel() {
     });
     const data = await response.json().catch(() => ({}));
     setLoading(false);
+    if (data?.ok === true && data?.articleId) {
+      router.push(data.detailPath || `/article/${data.articleId}`);
+      router.refresh();
+      return;
+    }
     if (!response.ok) {
       setMessage(data.error || "保存待处理链接失败");
       return;
     }
-    router.push(`/article/${data.articleId}`);
-    router.refresh();
+    setMessage(data.error || "保存成功响应缺少文章 ID，请稍后重试。");
   }
 
   async function importManual(event: FormEvent) {

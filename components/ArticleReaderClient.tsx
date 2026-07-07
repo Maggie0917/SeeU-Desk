@@ -344,6 +344,8 @@ export function ArticleReaderClient({
     if (response.ok) {
       const source = data.aiSource === "real" ? "real" : "mock";
       setAiSource(source);
+      if (typeof data.summary === "string") setSummary(data.summary);
+      if (typeof data.methodologyAndInsights === "string") setMethodologyAndInsights(data.methodologyAndInsights);
       setMessage(source === "real"
         ? "真实 AI 内容已重新生成"
         : data.warnings?.[0] || "当前未配置真实大模型 API，系统已使用 mock 结果。你可以在设置页配置 API 后重新生成。");
