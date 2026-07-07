@@ -12,6 +12,7 @@ export async function POST(request: Request) {
   const sourcePlatform = String(body.sourcePlatform ?? "手动导入").trim() || "手动导入";
   const sourceUrl = String(body.sourceUrl ?? "").trim() || null;
   const importMethod = String(body.importMethod ?? "").trim();
+  const authorName = String(body.authorName ?? "").trim() || null;
 
   if (content.length < 20) {
     return NextResponse.json({ error: "正文至少需要 20 个字符" }, { status: 400 });
@@ -25,6 +26,7 @@ export async function POST(request: Request) {
       sourcePlatform,
       sourceUrl,
       keywords: importMethod === "ocr" ? "import_method_ocr" : undefined,
+      authorName,
       readingStatus: "unread",
       isInReadLater: true
     }

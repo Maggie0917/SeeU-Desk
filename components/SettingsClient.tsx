@@ -16,6 +16,61 @@ type Tag = {
 
 type HelpTopic = "feishu" | "ai";
 
+function buildWechatBookmarklet(appOrigin: string) {
+  const code = `
+(() => {
+  const target = ${JSON.stringify(`${appOrigin}/import-helper`)};
+  const origin = ${JSON.stringify(appOrigin)};
+  const pick = (selectors) => {
+    for (const selector of selectors) {
+      const node = document.querySelector(selector);
+      if (node && node.innerText && node.innerText.trim()) return node;
+    }
+    return null;
+  };
+  const cleanText = (root) => {
+    const clone = root.cloneNode(true);
+    clone.querySelectorAll("script,style,iframe,button,input,textarea,svg,canvas,noscript,[hidden],[aria-hidden='true'],.js_ad_area,.rich_media_tool,.comment_area,[class*='advert'],[class*='recommend'],[class*='comment'],[class*='share']").forEach((node) => node.remove());
+    const blocks = Array.from(clone.querySelectorAll("p,section,h1,h2,h3,h4,li,blockquote"))
+      .map((node) => (node.innerText || "").replace(/\\s+/g, " ").trim())
+      .filter((line) => line.length > 2 && !/^(广告|推荐阅读|相关阅读|微信扫一扫|扫一扫|分享|赞|在看)$/.test(line));
+    const lines = blocks.length ? blocks : (clone.innerText || "").split(/\\n+/);
+    const seen = new Set();
+    return lines.map((line) => line.replace(/\\s+/g, " ").trim()).filter(Boolean).filter((line) => {
+      const key = line.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }).join("\\n\\n");
+  };
+  const titleNode = pick(["#activity-name", ".rich_media_title", "h1"]);
+  const authorNode = pick(["#js_name", ".rich_media_meta_nickname", ".profile_nickname"]);
+  const timeNode = pick(["#publish_time", "em.rich_media_meta_text", "time"]);
+  const contentNode = pick(["#js_content", ".rich_media_content", ".rich_media_area_primary", "article", "main"]);
+  const payload = {
+    source: "seeu-wechat-import",
+    title: titleNode ? titleNode.innerText.trim() : document.title.replace(/\\s*[-_]\\s*微信公众平台\\s*$/, "").trim(),
+    author: authorNode ? authorNode.innerText.trim() : "",
+    publishedAt: timeNode ? timeNode.innerText.trim() : "",
+    sourceUrl: location.href,
+    content: contentNode ? cleanText(contentNode) : ""
+  };
+  const win = window.open(target, "_blank");
+  let count = 0;
+  const timer = window.setInterval(() => {
+    if (!win || win.closed || count > 25) {
+      window.clearInterval(timer);
+      if (navigator.clipboard && payload.content) navigator.clipboard.writeText(JSON.stringify(payload)).catch(() => {});
+      return;
+    }
+    win.postMessage(payload, origin);
+    count += 1;
+  }, 350);
+})();
+`;
+  return `javascript:${encodeURIComponent(code)}`;
+}
+
 function HelpIconButton({ onClick, label }: { onClick: () => void; label: string }) {
   return (
     <button
@@ -276,6 +331,8 @@ export function SettingsClient({
     not_connected: "未授权",
     not_configured: "当前产品暂未配置飞书连接能力"
   }[settings?.feishuAuthStatus || "not_connected"] || "未授权";
+  const appOrigin = typeof window === "undefined" ? "https://seeu-desk.netlify.app" : window.location.origin;
+  const wechatBookmarkletHref = buildWechatBookmarklet(appOrigin);
 
   async function addTag(event: FormEvent) {
     event.preventDefault();
@@ -441,6 +498,43 @@ export function SettingsClient({
             <option value="external" disabled>真实 OCR 预留</option>
           </select>
         </div>
+      </section>
+
+      <section className="card border-t-4 border-t-leaf xl:col-span-2">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <h2 className="section-title">微信公众号导入助手</h2>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-moss">
+              当微信公众号链接无法自动解析时，请在浏览器中打开公众号原文，点击书签栏中的“导入公众号到 SeeU Desk”，系统会从当前页面提取标题、公众号名、发布时间和正文，进入确认页后保存。
+            </p>
+          </div>
+          <a
+            className="btn whitespace-nowrap"
+            href={wechatBookmarkletHref}
+            draggable
+            onClick={(event) => event.preventDefault()}
+            title="把这个按钮拖到浏览器书签栏"
+          >
+            导入公众号到 SeeU Desk
+          </a>
+        </div>
+        <div className="mt-4 grid gap-3 rounded-md bg-paper p-4 text-sm leading-6 text-moss md:grid-cols-3">
+          <div>
+            <div className="font-bold text-ink">1. 拖到书签栏</div>
+            <p className="mt-1">把上方按钮拖到浏览器书签栏。不要点击按钮，拖动保存为书签。</p>
+          </div>
+          <div>
+            <div className="font-bold text-ink">2. 打开公众号原文</div>
+            <p className="mt-1">在浏览器中打开可正常阅读的公众号文章页面。</p>
+          </div>
+          <div>
+            <div className="font-bold text-ink">3. 点击书签确认导入</div>
+            <p className="mt-1">点击书签后会打开确认页，你可以编辑正文，再保存为文章。</p>
+          </div>
+        </div>
+        <p className="mt-3 text-xs leading-5 text-moss">
+          导入助手只读取当前页面可见的标题、公众号名、发布时间、来源链接和正文；不会读取 Cookie、Token、localStorage 或 sessionStorage，也不会静默保存。
+        </p>
       </section>
 
       <section className="card border-t-4 border-t-leaf xl:col-span-2">

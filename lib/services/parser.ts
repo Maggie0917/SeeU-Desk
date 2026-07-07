@@ -68,6 +68,8 @@ export class ParserError extends Error {
 const FALLBACK_OPTIONS: ParserDiagnostic["fallbackOptions"] = ["manual_paste", "ocr", "save_pending"];
 const DESKTOP_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+const WECHAT_WEBVIEW_USER_AGENT =
+  "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.49 NetType/WIFI Language/zh_CN";
 const FETCH_TIMEOUT_MS = 15000;
 const BLOCK_TAGS = new Set(["p", "section", "article", "h1", "h2", "h3", "h4", "li", "blockquote", "figcaption"]);
 const SKIP_TAGS = new Set(["script", "style", "noscript", "svg", "iframe", "form", "button", "input", "select", "textarea", "nav", "footer", "aside"]);
@@ -291,17 +293,30 @@ function extractAuthor(root: HtmlNode) {
     ["property", "article:author"],
     ["name", "byl"]
   ]);
-  const byline = queryFirst(root, ["#js_name", ".rich_media_meta_nickname", ".author", ".byline"]);
+  const byline = queryFirst(root, ["#js_name", ".rich_media_meta_nickname", ".profile_nickname", ".author", ".byline"]);
   return compactText(metaAuthor ?? (byline ? nodeText(byline) : "")) || undefined;
 }
 
-function extractPublishedAt(root: HtmlNode) {
-  return (metaContent(root, [
+function normalizePublishTime(value: string) {
+  const normalized = compactText(decodeEntities(value));
+  if (!normalized) return undefined;
+  if (/^\d{10}$/.test(normalized)) return new Date(Number(normalized) * 1000).toISOString();
+  if (/^\d{13}$/.test(normalized)) return new Date(Number(normalized)).toISOString();
+  return normalized;
+}
+
+function extractPublishedAt(root: HtmlNode, html?: string) {
+  const visibleTime = metaContent(root, [
     ["property", "article:published_time"],
     ["name", "pubdate"],
     ["name", "publishdate"],
     ["name", "date"]
-  ]) ?? compactText(nodeText(queryFirst(root, ["#publish_time", "em.rich_media_meta_text", "time"]) || { nodeName: "" }))) || undefined;
+  ]) ?? compactText(nodeText(queryFirst(root, ["#publish_time", "em.rich_media_meta_text", "time"]) || { nodeName: "" }));
+  if (visibleTime) return normalizePublishTime(visibleTime);
+
+  const scriptSource = html ?? scriptTexts(root).join("\n");
+  const scriptMatch = scriptSource.match(/(?:publish_time|oriCreateTime|create_time)\s*[=:]\s*["']?([^"',;\n}]+)/i);
+  return scriptMatch?.[1] ? normalizePublishTime(scriptMatch[1]) : undefined;
 }
 
 function navigationNoiseScore(content: string) {
@@ -492,10 +507,10 @@ function createDiagnostic(input: {
   };
 }
 
-function parseWechatArticle(root: HtmlNode, url: string): ParseCandidate {
+function parseWechatArticle(root: HtmlNode, url: string, html?: string): ParseCandidate {
   const title = extractTitleFromDocument(root, url);
   const authorName = extractAuthor(root);
-  const publishedAt = extractPublishedAt(root);
+  const publishedAt = extractPublishedAt(root, html);
   for (const selector of ["#js_content", ".rich_media_content", ".rich_media_area_primary"]) {
     const element = queryFirst(root, [selector]);
     if (!element) continue;
@@ -764,12 +779,11 @@ async function readHtml(response: Response) {
 }
 
 export async function parseArticleFromUrl(url: string): Promise<ParsedArticle> {
-  let response: Response;
   const originalHost = safeHostname(url);
-  try {
-    response = await fetch(url, {
+  const fetchPage = async (userAgent: string) => {
+    const response = await fetch(url, {
       headers: {
-        "user-agent": DESKTOP_USER_AGENT,
+        "user-agent": userAgent,
         accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
         "cache-control": "no-cache",
@@ -780,8 +794,24 @@ export async function parseArticleFromUrl(url: string): Promise<ParsedArticle> {
       redirect: "follow",
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)
     });
+    const finalUrl = response.url || url;
+    const finalHost = safeHostname(finalUrl);
+    const platform = detectSourcePlatform(finalUrl) !== "generic_web" ? detectSourcePlatform(finalUrl) : detectSourcePlatform(url);
+    return { response, finalUrl, finalHost, platform };
+  };
+
+  let response: Response;
+  let finalUrl = url;
+  let finalHost = originalHost;
+  let platform = detectSourcePlatform(url);
+  try {
+    const fetched = await fetchPage(DESKTOP_USER_AGENT);
+    response = fetched.response;
+    finalUrl = fetched.finalUrl;
+    finalHost = fetched.finalHost;
+    platform = fetched.platform;
   } catch (error) {
-    const platform = detectSourcePlatform(url);
+    platform = detectSourcePlatform(url);
     const diagnostic = createDiagnostic({
       success: false,
       platform,
@@ -792,9 +822,6 @@ export async function parseArticleFromUrl(url: string): Promise<ParsedArticle> {
     throw new ParserError(failureMessage(diagnostic), diagnostic);
   }
 
-  const finalUrl = response.url || url;
-  const finalHost = safeHostname(finalUrl);
-  const platform = detectSourcePlatform(finalUrl) !== "generic_web" ? detectSourcePlatform(finalUrl) : detectSourcePlatform(url);
   if (!response.ok) {
     const blockedFailure = genericBlockedFailure("", response.status);
     const diagnostic = createDiagnostic({
@@ -830,7 +857,7 @@ export async function parseArticleFromUrl(url: string): Promise<ParsedArticle> {
   }
   const candidate =
     platform === "wechat_mp"
-      ? parseWechatArticle(root, finalUrl)
+      ? parseWechatArticle(root, finalUrl, html)
       : platform === "xiaohongshu"
         ? parseXiaohongshuArticle(root, html, finalUrl)
         : platform === "douyin"
@@ -838,6 +865,47 @@ export async function parseArticleFromUrl(url: string): Promise<ParsedArticle> {
           : parseGenericArticle(root, finalUrl, sourcePlatform);
 
   const qualityFailure = invalidReason(candidate);
+  if (qualityFailure && platform === "wechat_mp" && candidate.extractorUsed === "wechat_container_not_found") {
+    try {
+      const retry = await fetchPage(WECHAT_WEBVIEW_USER_AGENT);
+      if (retry.response.ok) {
+        const retryHtml = await readHtml(retry.response);
+        const retryRoot = parse5.parse(retryHtml) as unknown as HtmlNode;
+        const retryCandidate = parseWechatArticle(retryRoot, retry.finalUrl, retryHtml);
+        const retryFailure = invalidReason(retryCandidate);
+        if (!retryFailure) {
+          parserLog("success", {
+            hostname: originalHost,
+            parserType: "wechat_mp",
+            status: retry.response.status,
+            finalHost: retry.finalHost,
+            htmlLength: retryHtml.length,
+            extractedLength: retryCandidate.content.length
+          });
+          return {
+            title: retryCandidate.title,
+            content: retryCandidate.content,
+            sourcePlatform: retryCandidate.sourcePlatform,
+            authorName: retryCandidate.authorName,
+            publishedAt: retryCandidate.publishedAt,
+            imageUrls: retryCandidate.imageUrls,
+            diagnostic: createDiagnostic({
+              success: true,
+              platform: "wechat_mp",
+              title: retryCandidate.title,
+              content: retryCandidate.content,
+              htmlLength: retryHtml.length,
+              httpStatus: retry.response.status,
+              finalHost: retry.finalHost,
+              extractorUsed: `${retryCandidate.extractorUsed}_wechat_webview_retry`
+            })
+          };
+        }
+      }
+    } catch {
+      // Keep the original desktop diagnostic; the fallback is best-effort only.
+    }
+  }
   if (qualityFailure) {
     const diagnostic = createDiagnostic({
       success: false,

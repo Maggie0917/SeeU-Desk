@@ -195,6 +195,15 @@ export function ArticleImportPanel() {
     setMessage(`OCR 识别完成（${data.source === "macos_vision" ? "macOS Vision" : "外部 OCR"}，${data.imageCount || files.length} 张），请确认或修改后导入。`);
   }
 
+  async function copyCurrentLink() {
+    try {
+      await navigator.clipboard.writeText(url);
+      setMessage("已复制当前链接。请在浏览器打开公众号原文后，点击书签栏中的“导入公众号到 SeeU Desk”。");
+    } catch {
+      setMessage("复制失败，请手动复制当前链接。");
+    }
+  }
+
   return (
     <div className="grid gap-5 xl:grid-cols-3">
       <form onSubmit={importUrl} className="card bg-paper xl:col-span-3">
@@ -226,6 +235,19 @@ export function ArticleImportPanel() {
             <div className="mt-2 rounded-md bg-paper px-3 py-2 text-moss">
               {specificFallbackTip(diagnostic)}
             </div>
+            {diagnostic.platform === "wechat_mp" ? (
+              <div className="mt-2 rounded-md border border-coral/20 bg-paper px-3 py-2 text-moss">
+                微信公众号文章限制了服务端解析。请打开原文后点击书签栏中的“导入公众号到 SeeU Desk”，即可从当前页面导入正文。
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <a className="btn-secondary" href="/settings">
+                    查看微信公众号导入助手使用方法
+                  </a>
+                  <button type="button" className="btn-secondary" onClick={copyCurrentLink}>
+                    复制当前链接
+                  </button>
+                </div>
+              </div>
+            ) : null}
             {diagnostic.platform === "douyin" ? (
               <div className="mt-2 rounded-md bg-paper px-3 py-2 text-moss">
                 该抖音链接暂时无法直接解析正文。建议上传抖音图文截图通过 OCR 识别，也可以手动粘贴正文，或先保存为待处理链接。
