@@ -19,10 +19,16 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   const article = await prisma.article.findFirst({ where: { id, userId: user.id, isDeleted: false } });
   if (!article) return NextResponse.json({ error: "文章不存在" }, { status: 404 });
 
+  const title = typeof body.title === "string" ? body.title.trim() : undefined;
+  if (typeof body.title === "string") {
+    if (!title) return NextResponse.json({ error: "标题不能为空" }, { status: 400 });
+    if (title.length > 120) return NextResponse.json({ error: "标题不能超过 120 字，请缩短后再保存" }, { status: 400 });
+  }
+
   const updated = await prisma.article.update({
     where: { id },
     data: {
-      title: typeof body.title === "string" ? body.title : undefined,
+      title,
       summary: typeof body.summary === "string" ? body.summary : undefined,
       methodologySummary: typeof body.methodologySummary === "string" ? body.methodologySummary : undefined,
       reusableInsights: typeof body.reusableInsights === "string" ? body.reusableInsights : undefined,
@@ -44,7 +50,14 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     });
   }
 
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({
+    ok: true,
+    article: {
+      id: updated.id,
+      title: updated.title,
+      updatedAt: updated.updatedAt
+    }
+  });
 }
 
 export async function PUT(request: Request, context: { params: Promise<{ id: string }> }) {

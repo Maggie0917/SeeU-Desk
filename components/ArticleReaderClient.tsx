@@ -96,8 +96,12 @@ export function ArticleReaderClient({
   });
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
+  const [titleSaving, setTitleSaving] = useState(false);
   const [aiSource, setAiSource] = useState<"real" | "mock">(aiSettings.enabled ? "real" : "mock");
   const [feishuSyncStatus, setFeishuSyncStatus] = useState(article.feishuDoc?.syncStatus || "pending");
+  const [articleTitle, setArticleTitle] = useState(article.title);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState(article.title);
   const [myOpinion, setMyOpinion] = useState(article.myOpinion || "");
   const [summary, setSummary] = useState(article.summary || "");
   const [methodologyAndInsights, setMethodologyAndInsights] = useState(article.methodologyAndInsights || [article.methodologySummary, article.reusableInsights].filter(Boolean).join("\n\n"));
@@ -301,6 +305,50 @@ export function ArticleReaderClient({
     router.refresh();
   }
 
+  async function saveTitle() {
+    const nextTitle = titleDraft.trim();
+    if (!nextTitle) {
+      setMessage("标题不能为空");
+      return;
+    }
+    if (nextTitle.length > 120) {
+      setMessage("标题不能超过 120 字，请缩短后再保存");
+      return;
+    }
+    if (nextTitle === articleTitle) {
+      setEditingTitle(false);
+      setTitleDraft(articleTitle);
+      return;
+    }
+
+    setTitleSaving(true);
+    const response = await fetch(`/api/articles/${article.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: nextTitle })
+    });
+    const data = await response.json().catch(() => ({}));
+    setTitleSaving(false);
+
+    if (!response.ok) {
+      setMessage(data.error || "标题保存失败");
+      setTitleDraft(articleTitle);
+      return;
+    }
+
+    const updatedTitle = typeof data.article?.title === "string" ? data.article.title : nextTitle;
+    setArticleTitle(updatedTitle);
+    setTitleDraft(updatedTitle);
+    setEditingTitle(false);
+    setMessage("标题已更新");
+    router.refresh();
+  }
+
+  function cancelTitleEdit() {
+    setTitleDraft(articleTitle);
+    setEditingTitle(false);
+  }
+
   function selectPrimaryTag(tagId: string) {
     setPrimaryTagId(tagId);
     setSecondaryTagIds((current) => current.filter((id) => id !== tagId));
@@ -404,7 +452,38 @@ export function ArticleReaderClient({
         <div className="card">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div>
-              <h1 className="text-3xl font-black leading-tight text-ink sm:text-4xl">{article.title}</h1>
+              {editingTitle ? (
+                <div className="grid gap-2">
+                  <label className="sr-only" htmlFor="article-title-editor">文章标题</label>
+                  <textarea
+                    id="article-title-editor"
+                    className="input min-h-20 resize-y text-2xl font-black leading-tight text-ink sm:text-3xl"
+                    value={titleDraft}
+                    onChange={(event) => setTitleDraft(event.target.value)}
+                  />
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className={titleDraft.trim().length > 120 ? "text-xs text-coral" : "text-xs text-moss"}>
+                      {titleDraft.trim().length}/120
+                    </span>
+                    <button className="btn px-3 py-2 text-xs" onClick={saveTitle} disabled={titleSaving}>
+                      {titleSaving ? "保存中..." : "保存"}
+                    </button>
+                    <button className="btn-secondary px-3 py-2 text-xs" onClick={cancelTitleEdit} disabled={titleSaving}>
+                      取消
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  <h1 className="text-3xl font-black leading-tight text-ink sm:text-4xl">{articleTitle}</h1>
+                  <button className="btn-secondary w-fit px-3 py-1.5 text-xs" onClick={() => {
+                    setTitleDraft(articleTitle);
+                    setEditingTitle(true);
+                  }}>
+                    编辑标题
+                  </button>
+                </div>
+              )}
               <div className="mt-3 flex flex-wrap gap-2">
                 <span className="pill">{article.sourcePlatform || "未知来源"}</span>
                 {article.sourceUrl ? <a className="pill hover:text-leaf" href={article.sourceUrl} target="_blank">原文链接</a> : null}
