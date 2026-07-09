@@ -2,6 +2,8 @@ import { AppShell } from "@/components/AppShell";
 import { ArticleCard, ArticleCardData } from "@/components/ArticleCards";
 import { ArticleImportPanel } from "@/components/ArticleImportPanel";
 import { requireUser } from "@/lib/auth";
+import { DatabaseUnavailableNotice } from "@/components/DatabaseUnavailableNotice";
+import { isDatabaseUnavailableError, withDbRetry } from "@/lib/db-with-retry";
 import { prisma } from "@/lib/prisma";
 
 function serializeArticle(article: any): ArticleCardData {
@@ -13,8 +15,17 @@ function serializeArticle(article: any): ArticleCardData {
 }
 
 export default async function ReadingDeskPage() {
+  try {
+    return await ReadingDeskContent();
+  } catch (error) {
+    if (isDatabaseUnavailableError(error)) return <DatabaseUnavailableNotice />;
+    throw error;
+  }
+}
+
+async function ReadingDeskContent() {
   const user = await requireUser();
-  const [readLater, recent] = await Promise.all([
+  const [readLater, recent] = await withDbRetry(() => Promise.all([
     prisma.article.findMany({
       where: { userId: user.id, isInReadLater: true, isDeleted: false },
       include: {
@@ -35,7 +46,7 @@ export default async function ReadingDeskPage() {
       orderBy: { createdAt: "desc" },
       take: 6
     })
-  ]);
+  ]));
 
   const normalize = (article: any) =>
     serializeArticle({

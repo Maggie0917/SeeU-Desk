@@ -3,9 +3,24 @@ import { AppShell } from "@/components/AppShell";
 import { NotesListClient } from "@/components/NotesListClient";
 import { NOTE_TYPE_LABELS } from "@/lib/constants";
 import { requireUser } from "@/lib/auth";
+import { DatabaseUnavailableNotice } from "@/components/DatabaseUnavailableNotice";
+import { isDatabaseUnavailableError, withDbRetry } from "@/lib/db-with-retry";
 import { prisma } from "@/lib/prisma";
 
 export default async function NotesPage({
+  searchParams
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  try {
+    return await NotesContent({ searchParams });
+  } catch (error) {
+    if (isDatabaseUnavailableError(error)) return <DatabaseUnavailableNotice />;
+    throw error;
+  }
+}
+
+async function NotesContent({
   searchParams
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
@@ -18,7 +33,7 @@ export default async function NotesPage({
   const articleId = String(params.article ?? "");
   const view = String(params.view ?? "card");
 
-  const [tags, articles, notes] = await Promise.all([
+  const [tags, articles, notes] = await withDbRetry(() => Promise.all([
     prisma.tag.findMany({ where: { userId: user.id }, orderBy: { createdAt: "asc" } }),
     prisma.article.findMany({ where: { userId: user.id, isDeleted: false }, select: { id: true, title: true }, orderBy: { createdAt: "desc" } }),
     prisma.note.findMany({
@@ -50,7 +65,7 @@ export default async function NotesPage({
       },
       orderBy: { createdAt: "desc" }
     })
-  ]);
+  ]));
 
   const serialized = notes.map((note) => ({
     ...note,

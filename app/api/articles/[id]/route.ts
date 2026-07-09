@@ -2,62 +2,73 @@ import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { applyRecommendedTags, enrichArticleWithAi, getArticleWithRelations } from "@/lib/articles";
+import { databaseUnavailableBody, isDatabaseUnavailableError, withDbRetry } from "@/lib/db-with-retry";
 
 export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
-  const user = await requireUser();
-  const { id } = await context.params;
-  const article = await getArticleWithRelations(user.id, id);
-  if (!article) return NextResponse.json({ error: "文章不存在" }, { status: 404 });
-  return NextResponse.json(article);
+  try {
+    const user = await requireUser();
+    const { id } = await context.params;
+    const article = await withDbRetry(() => getArticleWithRelations(user.id, id));
+    if (!article) return NextResponse.json({ error: "文章不存在" }, { status: 404 });
+    return NextResponse.json(article);
+  } catch (error) {
+    if (isDatabaseUnavailableError(error)) return NextResponse.json(databaseUnavailableBody(), { status: 503 });
+    throw error;
+  }
 }
 
 export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
-  const user = await requireUser();
-  const { id } = await context.params;
-  const body = await request.json().catch(() => ({}));
+  try {
+    const user = await requireUser();
+    const { id } = await context.params;
+    const body = await request.json().catch(() => ({}));
 
-  const article = await prisma.article.findFirst({ where: { id, userId: user.id, isDeleted: false } });
-  if (!article) return NextResponse.json({ error: "文章不存在" }, { status: 404 });
+    const article = await withDbRetry(() => prisma.article.findFirst({ where: { id, userId: user.id, isDeleted: false } }));
+    if (!article) return NextResponse.json({ error: "文章不存在" }, { status: 404 });
 
-  const title = typeof body.title === "string" ? body.title.trim() : undefined;
-  if (typeof body.title === "string") {
-    if (!title) return NextResponse.json({ error: "标题不能为空" }, { status: 400 });
-    if (title.length > 120) return NextResponse.json({ error: "标题不能超过 120 字，请缩短后再保存" }, { status: 400 });
-  }
-
-  const updated = await prisma.article.update({
-    where: { id },
-    data: {
-      title,
-      summary: typeof body.summary === "string" ? body.summary : undefined,
-      methodologySummary: typeof body.methodologySummary === "string" ? body.methodologySummary : undefined,
-      reusableInsights: typeof body.reusableInsights === "string" ? body.reusableInsights : undefined,
-      methodologyAndInsights: typeof body.methodologyAndInsights === "string" ? body.methodologyAndInsights : undefined,
-      myOpinion: typeof body.myOpinion === "string" ? body.myOpinion : undefined,
-      readingStatus: body.readingStatus,
-      isStarred: typeof body.isStarred === "boolean" ? body.isStarred : undefined,
-      isInReadLater: typeof body.isInReadLater === "boolean" ? body.isInReadLater : undefined
+    const title = typeof body.title === "string" ? body.title.trim() : undefined;
+    if (typeof body.title === "string") {
+      if (!title) return NextResponse.json({ error: "标题不能为空" }, { status: 400 });
+      if (title.length > 120) return NextResponse.json({ error: "标题不能超过 120 字，请缩短后再保存" }, { status: 400 });
     }
-  });
 
-  if (body.regenerateAi) {
-    await enrichArticleWithAi({
-      userId: user.id,
-      articleId: id,
-      title: updated.title,
-      content: updated.content,
-      myOpinion: updated.myOpinion
+    const updated = await withDbRetry(() => prisma.article.update({
+      where: { id },
+      data: {
+        title,
+        summary: typeof body.summary === "string" ? body.summary : undefined,
+        methodologySummary: typeof body.methodologySummary === "string" ? body.methodologySummary : undefined,
+        reusableInsights: typeof body.reusableInsights === "string" ? body.reusableInsights : undefined,
+        methodologyAndInsights: typeof body.methodologyAndInsights === "string" ? body.methodologyAndInsights : undefined,
+        myOpinion: typeof body.myOpinion === "string" ? body.myOpinion : undefined,
+        readingStatus: body.readingStatus,
+        isStarred: typeof body.isStarred === "boolean" ? body.isStarred : undefined,
+        isInReadLater: typeof body.isInReadLater === "boolean" ? body.isInReadLater : undefined
+      }
+    }));
+
+    if (body.regenerateAi) {
+      await enrichArticleWithAi({
+        userId: user.id,
+        articleId: id,
+        title: updated.title,
+        content: updated.content,
+        myOpinion: updated.myOpinion
+      });
+    }
+
+    return NextResponse.json({
+      ok: true,
+      article: {
+        id: updated.id,
+        title: updated.title,
+        updatedAt: updated.updatedAt
+      }
     });
+  } catch (error) {
+    if (isDatabaseUnavailableError(error)) return NextResponse.json(databaseUnavailableBody(), { status: 503 });
+    throw error;
   }
-
-  return NextResponse.json({
-    ok: true,
-    article: {
-      id: updated.id,
-      title: updated.title,
-      updatedAt: updated.updatedAt
-    }
-  });
 }
 
 export async function PUT(request: Request, context: { params: Promise<{ id: string }> }) {

@@ -1,9 +1,17 @@
 import { AuthForm } from "@/components/AuthForm";
+import { DatabaseUnavailableNotice } from "@/components/DatabaseUnavailableNotice";
 import { getCurrentUser } from "@/lib/auth";
+import { isDatabaseUnavailableError } from "@/lib/db-with-retry";
 import { redirect } from "next/navigation";
 
 export default async function LoginPage() {
-  const user = await getCurrentUser();
+  let user;
+  try {
+    user = await getCurrentUser();
+  } catch (error) {
+    if (isDatabaseUnavailableError(error)) return <DatabaseUnavailableNotice />;
+    throw error;
+  }
   if (user) redirect("/");
 
   return (

@@ -3,9 +3,24 @@ import { AppShell } from "@/components/AppShell";
 import { LibraryBulkClient } from "@/components/LibraryBulkClient";
 import { READING_STATUS_LABELS } from "@/lib/constants";
 import { requireUser } from "@/lib/auth";
+import { DatabaseUnavailableNotice } from "@/components/DatabaseUnavailableNotice";
+import { isDatabaseUnavailableError, withDbRetry } from "@/lib/db-with-retry";
 import { prisma } from "@/lib/prisma";
 
 export default async function LibraryPage({
+  searchParams
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  try {
+    return await LibraryContent({ searchParams });
+  } catch (error) {
+    if (isDatabaseUnavailableError(error)) return <DatabaseUnavailableNotice />;
+    throw error;
+  }
+}
+
+async function LibraryContent({
   searchParams
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
@@ -21,7 +36,7 @@ export default async function LibraryPage({
   const readLater = params.readLater === "1";
   const feishu = String(params.feishu ?? "");
 
-  const [tags, sources, articles] = await Promise.all([
+  const [tags, sources, articles] = await withDbRetry(() => Promise.all([
     prisma.tag.findMany({ where: { userId: user.id }, orderBy: { createdAt: "asc" } }),
     prisma.article.findMany({
       where: { userId: user.id, isDeleted: false, sourcePlatform: { not: null } },
@@ -57,7 +72,7 @@ export default async function LibraryPage({
       },
       orderBy: { createdAt: "desc" }
     })
-  ]);
+  ]));
 
   const serialized = articles.map((article) => ({
     ...article,

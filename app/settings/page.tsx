@@ -1,6 +1,8 @@
 import { AppShell } from "@/components/AppShell";
 import { SettingsClient } from "@/components/SettingsClient";
 import { requireUser } from "@/lib/auth";
+import { DatabaseUnavailableNotice } from "@/components/DatabaseUnavailableNotice";
+import { isDatabaseUnavailableError, withDbRetry } from "@/lib/db-with-retry";
 import { prisma } from "@/lib/prisma";
 import { getFeishuConnectionStatus, getFeishuTokenDiagnostic } from "@/lib/services/feishu";
 
@@ -9,9 +11,22 @@ export default async function SettingsPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
+  try {
+    return await SettingsContent({ searchParams });
+  } catch (error) {
+    if (isDatabaseUnavailableError(error)) return <DatabaseUnavailableNotice />;
+    throw error;
+  }
+}
+
+async function SettingsContent({
+  searchParams
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const user = await requireUser();
   const params = await searchParams;
-  const [tags, settings, feishuCredential] = await Promise.all([
+  const [tags, settings, feishuCredential] = await withDbRetry(() => Promise.all([
     prisma.tag.findMany({
       where: { userId: user.id },
       include: { folderMapping: true },
@@ -19,9 +34,9 @@ export default async function SettingsPage({
     }),
     prisma.userSettings.findUnique({ where: { userId: user.id } }),
     prisma.feishuCredential.findUnique({ where: { userId: user.id } })
-  ]);
+  ]));
   const configStatus = getFeishuConnectionStatus();
-  const feishuDiagnostic = feishuCredential ? await getFeishuTokenDiagnostic(user.id) : null;
+  const feishuDiagnostic = feishuCredential ? await withDbRetry(() => getFeishuTokenDiagnostic(user.id)) : null;
   const feishuStatus = feishuDiagnostic?.status === "api_ready"
     ? "api_ready"
     : feishuDiagnostic?.status === "expired"

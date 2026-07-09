@@ -4,6 +4,7 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import crypto from "node:crypto";
 import { prisma } from "@/lib/prisma";
+import { isDatabaseUnavailableError, withDbRetry } from "@/lib/db-with-retry";
 
 const COOKIE_NAME = "pkad_session";
 
@@ -76,11 +77,12 @@ export async function getCurrentUser() {
     };
     if (!parsed.userId) return null;
 
-    return prisma.user.findUnique({
+    return await withDbRetry(() => prisma.user.findUnique({
       where: { id: parsed.userId },
       select: { id: true, email: true, name: true, createdAt: true }
-    });
-  } catch {
+    }));
+  } catch (error) {
+    if (isDatabaseUnavailableError(error)) throw error;
     return null;
   }
 }

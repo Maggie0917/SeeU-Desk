@@ -2,9 +2,10 @@ import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { applyRecommendedTags, enrichArticleWithAi } from "@/lib/articles";
+import { databaseUnavailableBody, isDatabaseUnavailableError, withDbRetry } from "@/lib/db-with-retry";
 import { compactText } from "@/lib/text";
 
-export async function POST(request: Request) {
+async function handlePost(request: Request) {
   const user = await requireUser();
   const body = await request.json().catch(() => ({}));
   const title = String(body.title ?? "").trim() || "未命名文章";
@@ -18,7 +19,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "正文至少需要 20 个字符" }, { status: 400 });
   }
 
-  const article = await prisma.article.create({
+  const article = await withDbRetry(() => prisma.article.create({
     data: {
       userId: user.id,
       title,
@@ -30,20 +31,37 @@ export async function POST(request: Request) {
       readingStatus: "unread",
       isInReadLater: true
     }
-  });
+  }));
 
-  await applyRecommendedTags({
-    userId: user.id,
-    articleId: article.id,
-    title: article.title,
-    content: article.content
-  });
-  await enrichArticleWithAi({
-    userId: user.id,
-    articleId: article.id,
-    title: article.title,
-    content: article.content
-  });
+  try {
+    await applyRecommendedTags({
+      userId: user.id,
+      articleId: article.id,
+      title: article.title,
+      content: article.content
+    });
+    await enrichArticleWithAi({
+      userId: user.id,
+      articleId: article.id,
+      title: article.title,
+      content: article.content
+    });
+  } catch {
+    return NextResponse.json({
+      ok: true,
+      articleId: article.id,
+      enrichmentWarning: "文章已导入，AI 摘要和方法论可在文章页稍后生成。"
+    });
+  }
 
   return NextResponse.json({ ok: true, articleId: article.id });
+}
+
+export async function POST(request: Request) {
+  try {
+    return await handlePost(request);
+  } catch (error) {
+    if (isDatabaseUnavailableError(error)) return NextResponse.json(databaseUnavailableBody(), { status: 503 });
+    throw error;
+  }
 }

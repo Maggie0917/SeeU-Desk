@@ -1,11 +1,22 @@
 import { AppShell } from "@/components/AppShell";
 import { ReportsClient } from "@/components/ReportsClient";
 import { requireUser } from "@/lib/auth";
+import { DatabaseUnavailableNotice } from "@/components/DatabaseUnavailableNotice";
+import { isDatabaseUnavailableError, withDbRetry } from "@/lib/db-with-retry";
 import { prisma } from "@/lib/prisma";
 
 export default async function ReportsPage() {
+  try {
+    return await ReportsContent();
+  } catch (error) {
+    if (isDatabaseUnavailableError(error)) return <DatabaseUnavailableNotice />;
+    throw error;
+  }
+}
+
+async function ReportsContent() {
   const user = await requireUser();
-  const [tags, reports] = await Promise.all([
+  const [tags, reports] = await withDbRetry(() => Promise.all([
     prisma.tag.findMany({ where: { userId: user.id }, orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }] }),
     prisma.report.findMany({
       where: { userId: user.id },
@@ -17,7 +28,7 @@ export default async function ReportsPage() {
       orderBy: { createdAt: "desc" },
       take: 20
     })
-  ]);
+  ]));
 
   return (
     <AppShell>

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { databaseUnavailableBody, isDatabaseUnavailableError, withDbRetry } from "@/lib/db-with-retry";
 import { detectSourcePlatform, parseArticleFromUrl, ParserError, type ParserDiagnostic } from "@/lib/services/parser";
 
 function safeHostname(input: string) {
@@ -58,7 +59,7 @@ function platformLabel(platform: ReturnType<typeof detectSourcePlatform>, url: s
   }
 }
 
-export async function POST(request: Request) {
+async function handlePost(request: Request) {
   const requestId = crypto.randomUUID();
   const user = await requireUser();
   const body = await request.json().catch(() => ({}));
@@ -77,10 +78,10 @@ export async function POST(request: Request) {
   const hostname = safeHostname(url);
   importLog({ requestId, routeStage: "request", hostname, parserType: detectSourcePlatform(url) });
 
-  const existingArticle = await prisma.article.findFirst({
+  const existingArticle = await withDbRetry(() => prisma.article.findFirst({
     where: { userId: user.id, sourceUrl: url, isDeleted: false },
     select: { id: true }
-  });
+  }));
   if (existingArticle) {
     importLog({ requestId, routeStage: "response", hostname, parserType: detectSourcePlatform(url) });
     return NextResponse.json({
@@ -99,7 +100,7 @@ export async function POST(request: Request) {
     const platform = diagnostic.platform || detectSourcePlatform(url);
     const title = String(diagnostic.title ?? "").trim() || `待补正文：${platformLabel(platform, url)}`;
     const failureReason = String(diagnostic.failureReason ?? "链接解析失败，等待补充正文。");
-    const article = await prisma.article.create({
+    const article = await withDbRetry(() => prisma.article.create({
       data: {
         userId: user.id,
         title,
@@ -111,7 +112,7 @@ export async function POST(request: Request) {
         readingStatus: "unread",
         isInReadLater: true
       }
-    });
+    }));
     importLog({
       requestId,
       routeStage: "create_article",
@@ -156,7 +157,7 @@ export async function POST(request: Request) {
     });
     let article;
     try {
-      article = await prisma.article.create({
+      article = await withDbRetry(() => prisma.article.create({
         data: {
           userId: user.id,
           title: parsed.title,
@@ -167,7 +168,7 @@ export async function POST(request: Request) {
           readingStatus: "unread",
           isInReadLater: true
         }
-      });
+      }));
     } catch (createError) {
       const failureReason = safeErrorReason(createError);
       const diagnostic = { ...parsed.diagnostic, success: false, failureType: "unknown" as const, failureReason: "正文已解析，但保存文章失败，请稍后重试。", routeStage: "create_article" };
@@ -277,7 +278,7 @@ export async function POST(request: Request) {
       const platform = diagnostic.platform || detectSourcePlatform(url);
       const title = String(diagnostic.title ?? "").trim() || `待补正文：${platformLabel(platform, url)}`;
       const failureReason = String(diagnostic.failureReason ?? "链接解析失败，等待补充正文。");
-      const article = await prisma.article.create({
+      const article = await withDbRetry(() => prisma.article.create({
         data: {
           userId: user.id,
           title,
@@ -289,7 +290,7 @@ export async function POST(request: Request) {
           readingStatus: "unread",
           isInReadLater: true
         }
-      });
+      }));
       importLog({
         requestId,
         routeStage: "create_article",
@@ -322,5 +323,14 @@ export async function POST(request: Request) {
       },
       { status: 422 }
     );
+  }
+}
+
+export async function POST(request: Request) {
+  try {
+    return await handlePost(request);
+  } catch (error) {
+    if (isDatabaseUnavailableError(error)) return NextResponse.json(databaseUnavailableBody(), { status: 503 });
+    throw error;
   }
 }

@@ -4,6 +4,8 @@ import { MetricCard } from "@/components/MetricCard";
 import { NOTE_TYPE_LABELS } from "@/lib/constants";
 import { normalizeDashboardWidgetPreferences } from "@/lib/dashboard-widgets";
 import { requireUser } from "@/lib/auth";
+import { DatabaseUnavailableNotice } from "@/components/DatabaseUnavailableNotice";
+import { isDatabaseUnavailableError, withDbRetry } from "@/lib/db-with-retry";
 import { prisma } from "@/lib/prisma";
 
 function secondsToMinutes(seconds: number) {
@@ -52,6 +54,15 @@ function BarChart({ items }: { items: Array<{ label: string; value: number }> })
 }
 
 export default async function DashboardPage() {
+  try {
+    return await DashboardContent();
+  } catch (error) {
+    if (isDatabaseUnavailableError(error)) return <DatabaseUnavailableNotice />;
+    throw error;
+  }
+}
+
+async function DashboardContent() {
   const user = await requireUser();
   const now = new Date();
   const weekStart = new Date(now);
@@ -76,7 +87,7 @@ export default async function DashboardPage() {
     totalTokenUsage,
     monthlyUnavailableUsageCount,
     totalUnavailableUsageCount
-  ] = await Promise.all([
+  ] = await withDbRetry(() => Promise.all([
     prisma.article.count({ where: { userId: user.id, isDeleted: false } }),
     prisma.article.count({ where: { userId: user.id, isDeleted: false, readingStatus: "finished" } }),
     prisma.highlight.count({ where: { userId: user.id, article: { isDeleted: false } } }),
@@ -103,7 +114,7 @@ export default async function DashboardPage() {
     prisma.aiUsageLog.count({
       where: { userId: user.id, actionType: { not: "connection_test" }, usageAvailable: false }
     })
-  ]);
+  ]));
 
   const noteTypeItems = Object.entries(NOTE_TYPE_LABELS).map(([key, label]) => ({
     label,

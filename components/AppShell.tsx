@@ -2,6 +2,8 @@ import Link from "next/link";
 import { requireUser } from "@/lib/auth";
 import { BRAND_NAME, BRAND_SLOGAN } from "@/lib/brand";
 import { LogoutButton } from "@/components/LogoutButton";
+import { DatabaseUnavailableNotice } from "@/components/DatabaseUnavailableNotice";
+import { isDatabaseUnavailableError } from "@/lib/db-with-retry";
 
 const navItems = [
   { href: "/", label: "阅读台" },
@@ -13,7 +15,13 @@ const navItems = [
 ];
 
 export async function AppShell({ children }: { children: React.ReactNode }) {
-  const user = await requireUser();
+  let user;
+  try {
+    user = await requireUser();
+  } catch (error) {
+    if (isDatabaseUnavailableError(error)) return <DatabaseUnavailableNotice />;
+    throw error;
+  }
 
   return (
     <div className="min-h-screen">

@@ -3,22 +3,33 @@ import { AppShell } from "@/components/AppShell";
 import { ArticleReaderClient } from "@/components/ArticleReaderClient";
 import { requireUser } from "@/lib/auth";
 import { getArticleWithRelations } from "@/lib/articles";
+import { DatabaseUnavailableNotice } from "@/components/DatabaseUnavailableNotice";
+import { isDatabaseUnavailableError, withDbRetry } from "@/lib/db-with-retry";
 import { prisma } from "@/lib/prisma";
 
 export default async function ArticlePage({ params }: { params: Promise<{ id: string }> }) {
+  try {
+    return await ArticleContent({ params });
+  } catch (error) {
+    if (isDatabaseUnavailableError(error)) return <DatabaseUnavailableNotice />;
+    throw error;
+  }
+}
+
+async function ArticleContent({ params }: { params: Promise<{ id: string }> }) {
   const user = await requireUser();
   const { id } = await params;
-  const [article, tags, settings] = await Promise.all([
+  const [article, tags, settings] = await withDbRetry(() => Promise.all([
     getArticleWithRelations(user.id, id),
     prisma.tag.findMany({ where: { userId: user.id }, orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }] }),
     prisma.userSettings.findUnique({ where: { userId: user.id } })
-  ]);
+  ]));
 
   if (!article) notFound();
 
   const visibleArticle =
     article.readingStatus === "unread"
-      ? await prisma.article.update({
+      ? await withDbRetry(() => prisma.article.update({
           where: { id: article.id },
           data: { readingStatus: "reading" },
           include: {
@@ -33,7 +44,7 @@ export default async function ArticlePage({ params }: { params: Promise<{ id: st
             },
             feishuDoc: true
           }
-        })
+        }))
       : article;
 
   const serialized = {
